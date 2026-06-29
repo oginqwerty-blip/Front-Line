@@ -226,12 +226,12 @@ function playerIndexForSeat(seat) {
 }
 
 function isNetworkMatch() {
-  return networkSeat === "North" || networkSeat === "South" || networkSeat === "Spectator";
+  return networkReady && (networkSeat === "North" || networkSeat === "South" || networkSeat === "Spectator");
 }
 
 function viewerPlayerIndex() {
-  const networkIndex = playerIndexForSeat(networkSeat);
-  return networkIndex ?? state.active;
+  if (!isNetworkMatch()) return state.active;
+  return playerIndexForSeat(networkSeat) ?? state.active;
 }
 
 function canActNow() {

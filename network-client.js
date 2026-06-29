@@ -97,7 +97,9 @@
       clientsList.append(item);
     });
     helpText.textContent = data.self
-      ? `You are ${data.self.seat}. Share code ${data.room}, or share this URL.`
+      ? data.ready
+        ? `You are ${data.self.seat}. Share code ${data.room}, or share this URL.`
+        : `Waiting for an opponent. You can solo play for now. Share code ${data.room}.`
       : "Connecting to match room...";
   }
 
