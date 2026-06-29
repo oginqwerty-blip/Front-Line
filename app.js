@@ -56,6 +56,8 @@ const state = {
 let undoSnapshot = null;
 let scoutReturnSnapshot = null;
 let draggedCardId = null;
+let pointerDrag = null;
+let suppressCardClickUntil = 0;
 let confirmingNewGame = false;
 let networkSeat = null;
 let networkReady = false;
@@ -1184,6 +1186,8 @@ function renderRows(container, playerIndex) {
   container.innerHTML = "";
   for (let i = 0; i < 9; i += 1) {
     const lane = document.createElement("div");
+    lane.dataset.playerIndex = String(playerIndex);
+    lane.dataset.bannerIndex = String(i);
     lane.className = [
       "lane",
       isLaneDropTarget(playerIndex, i) ? "lane-drop-target" : "",
@@ -1231,6 +1235,7 @@ function renderBanners() {
   for (let i = 0; i < 9; i += 1) {
     const owner = claimOwner(i);
     const banner = document.createElement("div");
+    banner.dataset.bannerIndex = String(i);
     banner.className = [
       "banner",
       i === state.selectedBanner ? "selected" : "",
@@ -1284,10 +1289,13 @@ function renderBanners() {
   }
 }
 
-function canDropCardOnBanner(event, bannerIndex) {
+function activeHandCardById(cardId) {
+  return activePlayer().hand.find((item) => item.id === cardId) ?? null;
+}
+
+function canDropCardOnBannerById(cardId, bannerIndex) {
   if (!canActNow()) return false;
-  const cardId = draggedCardId || event.dataTransfer?.getData("text/plain");
-  const card = activePlayer().hand.find((item) => item.id === cardId);
+  const card = activeHandCardById(cardId);
   if (!card || state.gameOver || state.pendingCommand || state.mustDraw || state.hasPlayedThisTurn) return false;
   if (card.type === "tactic" && !canPlayTacticCard(card)) return false;
   if (card.type !== "tactic") return canPlaceOnBanner(state.active, bannerIndex);
@@ -1296,10 +1304,19 @@ function canDropCardOnBanner(event, bannerIndex) {
   return false;
 }
 
+function canDropCardOnBanner(event, bannerIndex) {
+  const cardId = draggedCardId || event.dataTransfer?.getData("text/plain");
+  return canDropCardOnBannerById(cardId, bannerIndex);
+}
+
+function canDropCardOnLaneById(cardId, playerIndex, bannerIndex) {
+  const card = activeHandCardById(cardId);
+  return playerIndex === state.active && card?.kind !== "environment" && canDropCardOnBannerById(cardId, bannerIndex);
+}
+
 function canDropCardOnLane(event, playerIndex, bannerIndex) {
   const cardId = draggedCardId || event.dataTransfer?.getData("text/plain");
-  const card = activePlayer().hand.find((item) => item.id === cardId);
-  return playerIndex === state.active && card?.kind !== "environment" && canDropCardOnBanner(event, bannerIndex);
+  return canDropCardOnLaneById(cardId, playerIndex, bannerIndex);
 }
 
 function canUseEnvironmentOnBanner(card, bannerIndex) {
@@ -1312,11 +1329,11 @@ function canUseEnvironmentOnBanner(card, bannerIndex) {
 function draggedHandCard(event) {
   if (!canActNow()) return null;
   const cardId = draggedCardId || event.dataTransfer?.getData("text/plain");
-  return activePlayer().hand.find((card) => card.id === cardId) ?? null;
+  return activeHandCardById(cardId);
 }
 
-function canDropCommandOnBoard(event) {
-  const card = draggedHandCard(event);
+function canDropCommandOnBoardById(cardId) {
+  const card = activeHandCardById(cardId);
   return Boolean(card)
     && card.type === "tactic"
     && card.kind === "command"
@@ -1327,11 +1344,158 @@ function canDropCommandOnBoard(event) {
     && canPlayTacticCard(card);
 }
 
+function canDropCommandOnBoard(event) {
+  const card = draggedHandCard(event);
+  return canDropCommandOnBoardById(card?.id);
+}
+
 function playCommandCardById(cardId) {
   const card = activePlayer().hand.find((item) => item.id === cardId);
   if (!card || card.type !== "tactic" || card.kind !== "command") return;
   state.selectedCardId = cardId;
   playSelectedTactic(state.selectedBanner);
+}
+
+function beginPointerCardDrag(event, card, sourceElement) {
+  if (event.pointerType === "mouse" || sourceElement.disabled) return;
+  pointerDrag = {
+    cardId: card.id,
+    pointerId: event.pointerId,
+    sourceElement,
+    startX: event.clientX,
+    startY: event.clientY,
+    dragging: false,
+    ghost: null,
+  };
+  sourceElement.setPointerCapture?.(event.pointerId);
+  window.addEventListener("pointermove", handlePointerCardMove, { passive: false });
+  window.addEventListener("pointerup", finishPointerCardDrag, { passive: false });
+  window.addEventListener("pointercancel", cancelPointerCardDrag, { passive: false });
+}
+
+function startPointerCardDrag(event) {
+  if (!pointerDrag || pointerDrag.dragging) return;
+  const sourceRect = pointerDrag.sourceElement.getBoundingClientRect();
+  const ghost = pointerDrag.sourceElement.cloneNode(true);
+  ghost.classList.add("drag-ghost");
+  ghost.style.height = `${sourceRect.height}px`;
+  ghost.style.width = `${sourceRect.width}px`;
+  document.body.append(ghost);
+  pointerDrag.ghost = ghost;
+  pointerDrag.dragging = true;
+  draggedCardId = pointerDrag.cardId;
+  pointerDrag.sourceElement.classList.add("drag-source");
+  document.body.classList.add("touch-card-dragging");
+  refreshPointerDropTargets();
+  movePointerGhost(event.clientX, event.clientY);
+  updatePointerHover(event.clientX, event.clientY);
+}
+
+function handlePointerCardMove(event) {
+  if (!pointerDrag || event.pointerId !== pointerDrag.pointerId) return;
+  const deltaX = event.clientX - pointerDrag.startX;
+  const deltaY = event.clientY - pointerDrag.startY;
+  if (!pointerDrag.dragging && Math.hypot(deltaX, deltaY) > 8) startPointerCardDrag(event);
+  if (!pointerDrag.dragging) return;
+  event.preventDefault();
+  movePointerGhost(event.clientX, event.clientY);
+  updatePointerHover(event.clientX, event.clientY);
+}
+
+function finishPointerCardDrag(event) {
+  if (!pointerDrag || event.pointerId !== pointerDrag.pointerId) return;
+  const target = pointerDrag.dragging ? pointerDropTargetFromPoint(event.clientX, event.clientY) : null;
+  const cardId = pointerDrag.cardId;
+  const didDrag = pointerDrag.dragging;
+  cleanupPointerCardDrag();
+  if (!didDrag) return;
+  suppressCardClickUntil = Date.now() + 450;
+  event.preventDefault();
+  if (target?.type === "lane" || target?.type === "banner") playCardById(cardId, target.bannerIndex);
+  if (target?.type === "command") playCommandCardById(cardId);
+}
+
+function cancelPointerCardDrag(event) {
+  if (event && pointerDrag && event.pointerId !== pointerDrag.pointerId) return;
+  cleanupPointerCardDrag();
+}
+
+function cleanupPointerCardDrag() {
+  if (!pointerDrag) return;
+  pointerDrag.sourceElement.classList.remove("drag-source");
+  pointerDrag.sourceElement.releasePointerCapture?.(pointerDrag.pointerId);
+  pointerDrag.ghost?.remove();
+  pointerDrag = null;
+  draggedCardId = null;
+  clearPointerDropTargets();
+  document.body.classList.remove("touch-card-dragging");
+  window.removeEventListener("pointermove", handlePointerCardMove);
+  window.removeEventListener("pointerup", finishPointerCardDrag);
+  window.removeEventListener("pointercancel", cancelPointerCardDrag);
+}
+
+function movePointerGhost(x, y) {
+  if (!pointerDrag?.ghost) return;
+  pointerDrag.ghost.style.left = `${x}px`;
+  pointerDrag.ghost.style.top = `${y}px`;
+}
+
+function refreshPointerDropTargets() {
+  const cardId = pointerDrag?.cardId;
+  if (!cardId) return;
+  document.querySelectorAll(".banner").forEach((banner) => {
+    const bannerIndex = Number(banner.dataset.bannerIndex);
+    banner.classList.toggle("touch-drop-target", canDropCardOnBannerById(cardId, bannerIndex));
+  });
+  document.querySelectorAll(".lane").forEach((lane) => {
+    const playerIndex = Number(lane.dataset.playerIndex);
+    const bannerIndex = Number(lane.dataset.bannerIndex);
+    lane.classList.toggle("touch-drop-target", canDropCardOnLaneById(cardId, playerIndex, bannerIndex));
+  });
+  els.boardShell.classList.toggle("command-drop-target", canDropCommandOnBoardById(cardId));
+}
+
+function clearPointerDropTargets() {
+  document.querySelectorAll(".touch-drop-target, .drag-over").forEach((element) => {
+    element.classList.remove("touch-drop-target", "drag-over");
+  });
+  els.boardShell.classList.remove("command-drop-target");
+}
+
+function updatePointerHover(x, y) {
+  document.querySelectorAll(".drag-over").forEach((element) => element.classList.remove("drag-over"));
+  const target = pointerDropTargetFromPoint(x, y);
+  target?.element?.classList.add("drag-over");
+}
+
+function pointerDropTargetFromPoint(x, y) {
+  const cardId = pointerDrag?.cardId;
+  if (!cardId) return null;
+  const element = document.elementFromPoint(x, y);
+  if (!element) return null;
+
+  const lane = element.closest(".lane");
+  if (lane) {
+    const playerIndex = Number(lane.dataset.playerIndex);
+    const bannerIndex = Number(lane.dataset.bannerIndex);
+    if (canDropCardOnLaneById(cardId, playerIndex, bannerIndex)) {
+      return { type: "lane", bannerIndex, element: lane };
+    }
+  }
+
+  const banner = element.closest(".banner");
+  if (banner) {
+    const bannerIndex = Number(banner.dataset.bannerIndex);
+    if (canDropCardOnBannerById(cardId, bannerIndex)) {
+      return { type: "banner", bannerIndex, element: banner };
+    }
+  }
+
+  if (els.boardShell.contains(element) && canDropCommandOnBoardById(cardId)) {
+    return { type: "command", element: els.boardShell };
+  }
+
+  return null;
 }
 
 function effectBadge(label, title, variant = "") {
@@ -1406,7 +1570,12 @@ function renderHand() {
       button.addEventListener("dragend", () => {
         draggedCardId = null;
       });
+      button.addEventListener("pointerdown", (event) => {
+        if (canReturnScout) return;
+        beginPointerCardDrag(event, card, button);
+      });
       button.addEventListener("click", () => {
+        if (Date.now() < suppressCardClickUntil) return;
         if (canReturnScout) {
           returnScoutCard(card.id);
           return;
