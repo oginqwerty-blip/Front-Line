@@ -296,6 +296,51 @@ h1 {
   font-size: 0.9rem;
 }
 
+.room-join-form {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.room-join-form label {
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.room-join-row {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.room-join-row input {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font: inherit;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.82rem;
+  font-weight: 900;
+  min-width: 0;
+  padding: 6px 8px;
+  text-transform: uppercase;
+}
+
+.room-join-row input:focus {
+  border-color: var(--turn-line);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--turn-line) 16%, transparent);
+  outline: none;
+}
+
+.room-join-row .secondary-button {
+  min-height: 30px;
+  padding: 6px 10px;
+}
+
 .network-clients {
   display: grid;
   gap: 6px;
@@ -1912,6 +1957,30 @@ body.touch-card-dragging {
 
   .network-panel-header {
     margin-bottom: 5px;
+  }
+
+  .room-join-form {
+    gap: 3px;
+    margin-bottom: 5px;
+  }
+
+  .room-join-form label {
+    font-size: 0.52rem;
+  }
+
+  .room-join-row {
+    gap: 4px;
+  }
+
+  .room-join-row input {
+    font-size: 0.64rem;
+    padding: 4px 6px;
+  }
+
+  .room-join-row .secondary-button {
+    font-size: 0.58rem;
+    min-height: 22px;
+    padding: 4px 7px;
   }
 
   .network-client {

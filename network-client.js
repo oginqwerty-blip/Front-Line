@@ -3,6 +3,8 @@
   const statusText = document.querySelector("#networkStatusText");
   const clientsList = document.querySelector("#networkClients");
   const helpText = document.querySelector("#networkHelp");
+  const roomJoinForm = document.querySelector("#roomJoinForm");
+  const roomCodeInput = document.querySelector("#roomCodeInput");
 
   if (!panel || !statusText || !clientsList || !helpText) return;
 
@@ -26,6 +28,10 @@
     return output;
   }
 
+  function normalizeRoomCode(value) {
+    return String(value || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24).toUpperCase();
+  }
+
   function ensureClientId() {
     const existing = localStorage.getItem(CLIENT_KEY);
     if (existing) return existing;
@@ -38,7 +44,7 @@
     const url = new URL(window.location.href);
     const fromUrl = url.searchParams.get("room");
     if (fromUrl) {
-      const normalized = fromUrl.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 24).toUpperCase();
+      const normalized = normalizeRoomCode(fromUrl) || randomId(6);
       localStorage.setItem(ROOM_KEY, normalized);
       if (normalized !== fromUrl) {
         url.searchParams.set("room", normalized);
@@ -56,6 +62,7 @@
 
   const clientId = ensureClientId();
   const roomId = /^https?:$/.test(window.location.protocol) ? ensureRoomId() : "STATIC";
+  if (roomCodeInput) roomCodeInput.value = roomId === "STATIC" ? "" : roomId;
 
   function apiUrl(path) {
     const url = new URL(path, window.location.origin);
@@ -68,7 +75,7 @@
     panel.hidden = false;
     statusText.textContent = "Static";
     clientsList.innerHTML = "";
-    helpText.textContent = "Local match detection starts when opened through the local server.";
+    helpText.textContent = "Room codes work when opened through the local or online server.";
   }
 
   function renderNetwork(data) {
@@ -90,8 +97,31 @@
       clientsList.append(item);
     });
     helpText.textContent = data.self
-      ? `You are ${data.self.seat}. Share this room URL: ${window.location.href}`
+      ? `You are ${data.self.seat}. Share code ${data.room}, or share this URL.`
       : "Connecting to match room...";
+  }
+
+  function joinRoom(event) {
+    event.preventDefault();
+    if (!/^https?:$/.test(window.location.protocol)) {
+      helpText.textContent = "Open through the server before joining a room.";
+      return;
+    }
+    const nextRoom = normalizeRoomCode(roomCodeInput?.value);
+    if (!nextRoom) {
+      helpText.textContent = "Enter a room code first.";
+      roomCodeInput?.focus();
+      return;
+    }
+    if (nextRoom === roomId) {
+      helpText.textContent = `Already in room ${roomId}.`;
+      return;
+    }
+
+    localStorage.setItem(ROOM_KEY, nextRoom);
+    const url = new URL(window.location.href);
+    url.searchParams.set("room", nextRoom);
+    window.location.assign(url.toString());
   }
 
   async function fetchState() {
@@ -151,10 +181,16 @@
   }
 
   if (!/^https?:$/.test(window.location.protocol)) {
+    roomJoinForm?.addEventListener("submit", joinRoom);
     renderOffline();
     return;
   }
 
+  roomCodeInput?.addEventListener("input", () => {
+    const normalized = normalizeRoomCode(roomCodeInput.value);
+    if (roomCodeInput.value !== normalized) roomCodeInput.value = normalized;
+  });
+  roomJoinForm?.addEventListener("submit", joinRoom);
   ping();
   window.setInterval(ping, 1200);
 })();

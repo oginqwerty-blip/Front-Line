@@ -50,6 +50,13 @@
           <span>Local Match</span>
           <strong id="networkStatusText">Offline</strong>
         </div>
+        <form id="roomJoinForm" class="room-join-form">
+          <label for="roomCodeInput">Room Code</label>
+          <div class="room-join-row">
+            <input id="roomCodeInput" type="text" inputmode="latin" autocomplete="off" maxlength="24" placeholder="ABC123" />
+            <button id="roomJoinButton" class="secondary-button" type="submit">Join</button>
+          </div>
+        </form>
         <div id="networkClients" class="network-clients"></div>
         <p id="networkHelp">Local server not detected.</p>
       </section>
@@ -230,7 +237,7 @@
           <article>
             <h3>オンライン対戦</h3>
             <p>
-              同じRoom URLを開くと対戦できます。最初の参加者がNorth、次がSouthです。
+              同じRoom URLを開くか、画面のRoom Code欄に同じコードを入力すると対戦できます。最初の参加者がNorth、次がSouthです。
               手札は自分だけに表示され、盤面はNew Game、End Turn、勝敗決定、勝敗後Undoのタイミングで同期されます。
             </p>
           </article>
