@@ -1,0 +1,13 @@
+{
+  "name": "front-line",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Front-Line browser card game with local/online room sync.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

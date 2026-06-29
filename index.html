@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Front-Line</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <span class="title-rider-bg" aria-hidden="true"></span>
+          <p class="eyebrow">Tactical card duel</p>
+          <h1><span class="title-north">F</span><span class="title-body">ront</span><span class="title-hyphen">-</span><span class="title-body">Lin</span><span class="title-south">e</span></h1>
+        </div>
+        <section class="status-panel" aria-live="polite">
+          <div class="turn-card" id="turnCard">
+            <span class="label">Turn</span>
+            <strong id="turnLabel">-</strong>
+          </div>
+          <div>
+            <span class="label">Troops</span>
+            <strong id="deckCount">0</strong>
+          </div>
+          <div>
+            <span class="label">Tactics</span>
+            <strong id="tacticDeckCount">0</strong>
+          </div>
+          <div class="tactic-score north-score">
+            <span class="label">North Tactics</span>
+            <strong id="northTacticsUsed">0</strong>
+          </div>
+          <div class="tactic-score south-score">
+            <span class="label">South Tactics</span>
+            <strong id="southTacticsUsed">0</strong>
+          </div>
+          <button id="newGameButton" class="secondary-button" type="button">New Game</button>
+          <span id="newGameConfirm" class="new-game-confirm" hidden>
+            <button id="confirmNewGameButton" class="confirm-yes" type="button" aria-label="Confirm new game">Yes</button>
+            <button id="cancelNewGameButton" class="confirm-no" type="button" aria-label="Cancel new game">No</button>
+          </span>
+        </section>
+      </header>
+
+      <section id="message" class="message"></section>
+
+      <section id="networkPanel" class="network-panel" hidden>
+        <div class="network-panel-header">
+          <span>Local Match</span>
+          <strong id="networkStatusText">Offline</strong>
+        </div>
+        <div id="networkClients" class="network-clients"></div>
+        <p id="networkHelp">Local server not detected.</p>
+      </section>
+
+      <section class="opponent-hand-panel" aria-label="Opponent hand">
+        <div class="opponent-hand-title">
+          <span>Opponent Hand</span>
+          <strong id="opponentHandCount">0</strong>
+        </div>
+        <div id="opponentHand" class="opponent-hand"></div>
+      </section>
+
+      <section id="boardShell" class="board-shell" aria-label="Board">
+        <div id="northMarker" class="side-marker">North</div>
+        <div id="opponentRows" class="side-rows"></div>
+        <div id="banners" class="banner-row"></div>
+        <div id="playerRows" class="side-rows"></div>
+        <div id="southMarker" class="side-marker">South</div>
+        <div class="board-utility-row">
+          <div class="used-command-shelf" aria-label="Used command cards">
+            <span class="used-command-label">Commands</span>
+            <div class="used-command-groups">
+              <div class="used-command-group north-command-group">
+                <span class="used-command-side">North</span>
+                <div id="northUsedCommands" class="used-command-cards"></div>
+              </div>
+              <div class="used-command-group south-command-group">
+                <span class="used-command-side">South</span>
+                <div id="southUsedCommands" class="used-command-cards"></div>
+              </div>
+            </div>
+          </div>
+          <div class="routed-shelf" aria-label="Routed cards">
+            <span class="routed-label">Routed</span>
+            <div id="routedCards" class="routed-cards"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="bottom-dock" aria-label="Hand and actions">
+        <div class="action-strip">
+          <button id="claimButton" class="primary-button" type="button" disabled>Claim Selected Banner</button>
+          <button id="drawButton" class="primary-button" type="button" disabled>Draw Troop</button>
+          <button id="drawTacticButton" class="primary-button" type="button" disabled>Draw Tactic</button>
+          <button id="playTacticButton" class="secondary-button" type="button" disabled>Play Tactic</button>
+          <button id="endTurnButton" class="secondary-button" type="button" disabled>End Turn</button>
+          <button id="undoButton" class="secondary-button" type="button" disabled>Undo</button>
+        </div>
+
+        <section class="hand-shell">
+          <div class="hand-header">
+            <h2 id="handTitle">Hand</h2>
+          </div>
+          <div id="hand" class="hand"></div>
+          <div id="selectedHint" class="selected-hint">Your turn</div>
+        </section>
+      </section>
+
+      <section class="rules-panel">
+        <h2>Formation Order</h2>
+        <ol>
+          <li>
+            <strong>Royal Run</strong>: same color, consecutive numbers
+            <span class="formation-example" aria-label="Example: Ember 4, Ember 5, Ember 6">
+              <span class="mini-card mini-ember"><strong>4</strong><span>Ember</span></span>
+              <span class="mini-card mini-ember"><strong>5</strong><span>Ember</span></span>
+              <span class="mini-card mini-ember"><strong>6</strong><span>Ember</span></span>
+            </span>
+          </li>
+          <li>
+            <strong>Triple</strong>: three cards with the same number
+            <span class="formation-example" aria-label="Example: Ember 8, Tide 8, Moss 8">
+              <span class="mini-card mini-ember"><strong>8</strong><span>Ember</span></span>
+              <span class="mini-card mini-tide"><strong>8</strong><span>Tide</span></span>
+              <span class="mini-card mini-moss"><strong>8</strong><span>Moss</span></span>
+            </span>
+          </li>
+          <li>
+            <strong>Color Guard</strong>: three cards with the same color
+            <span class="formation-example" aria-label="Example: Violet 2, Violet 7, Violet 10">
+              <span class="mini-card mini-violet"><strong>2</strong><span>Violet</span></span>
+              <span class="mini-card mini-violet"><strong>7</strong><span>Violet</span></span>
+              <span class="mini-card mini-violet"><strong>10</strong><span>Violet</span></span>
+            </span>
+          </li>
+          <li>
+            <strong>Run</strong>: three consecutive numbers
+            <span class="formation-example" aria-label="Example: Stone 3, Sun 4, Tide 5">
+              <span class="mini-card mini-stone"><strong>3</strong><span>Stone</span></span>
+              <span class="mini-card mini-sun"><strong>4</strong><span>Sun</span></span>
+              <span class="mini-card mini-tide"><strong>5</strong><span>Tide</span></span>
+            </span>
+          </li>
+          <li>
+            <strong>Company</strong>: highest total
+            <span class="formation-example" aria-label="Example: Moss 9, Ember 7, Stone 6">
+              <span class="mini-card mini-moss"><strong>9</strong><span>Moss</span></span>
+              <span class="mini-card mini-ember"><strong>7</strong><span>Ember</span></span>
+              <span class="mini-card mini-stone"><strong>6</strong><span>Stone</span></span>
+            </span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="tactic-guide">
+        <h2>Tactic Cards</h2>
+        <div id="tacticGuideList" class="tactic-guide-list"></div>
+      </section>
+
+      <section id="winOverlay" class="win-overlay" hidden>
+        <div class="win-burst">
+          <span>VICTORY</span>
+          <strong id="winnerName">-</strong>
+        </div>
+      </section>
+
+      <section id="turnPassOverlay" class="turn-pass-overlay" hidden>
+        <div class="turn-pass-panel">
+          <span>Pass the screen</span>
+          <strong id="turnPassPlayer">-</strong>
+          <button id="turnPassButton" class="primary-button" type="button">Show Hand</button>
+        </div>
+      </section>
+
+      <div id="cardTooltip" class="card-tooltip" role="tooltip" hidden></div>
+    </main>
+    <script src="./app.js"></script>
+    <script src="./network-client.js"></script>
+  </body>
+</html>
