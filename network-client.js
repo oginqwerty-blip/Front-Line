@@ -12,6 +12,8 @@
   let latestVersion = 0;
   let selfSeat = null;
   let initialPublished = false;
+  let consecutiveFailures = 0;
+  let pingInFlight = false;
 
   function randomId(length = 8) {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -71,6 +73,7 @@
 
   function renderNetwork(data) {
     panel.hidden = false;
+    consecutiveFailures = 0;
     selfSeat = data.self?.seat ?? null;
     window.FrontLineGame?.setNetworkInfo(selfSeat, data.ready);
     const seated = data.clients.filter((client) => client.seat !== "Spectator");
@@ -128,16 +131,22 @@
   };
 
   async function ping() {
+    if (pingInFlight) return;
+    pingInFlight = true;
     try {
       const response = await fetch(apiUrl("/api/register"), { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       renderNetwork(await response.json());
       await fetchState();
     } catch (error) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures < 3) return;
       panel.hidden = false;
       statusText.textContent = "Offline";
       clientsList.innerHTML = "";
-      helpText.textContent = "Server not detected.";
+      helpText.textContent = "Connection is unstable. Retrying...";
+    } finally {
+      pingInFlight = false;
     }
   }
 
@@ -147,5 +156,5 @@
   }
 
   ping();
-  window.setInterval(ping, 3000);
+  window.setInterval(ping, 1200);
 })();
