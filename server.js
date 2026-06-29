@@ -5,7 +5,7 @@ const path = require("path");
 
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = __dirname;
-const CLIENT_TTL_MS = 15000;
+const CLIENT_TTL_MS = 60000;
 const ROOM_TTL_MS = 1000 * 60 * 60 * 6;
 
 const rooms = new Map();
