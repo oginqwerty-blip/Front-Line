@@ -159,6 +159,84 @@
         <div id="tacticGuideList" class="tactic-guide-list"></div>
       </section>
 
+      <section class="rules-detail" aria-label="Detailed rules">
+        <h2>Detailed Rules</h2>
+        <div class="rules-detail-grid">
+          <article>
+            <h3>目的と勝利条件</h3>
+            <p>
+              9本のBannerを奪い合い、先に
+              <strong>連続する3本</strong>、または
+              <strong>合計5本</strong>をSecureしたプレイヤーの勝利です。
+              SecureされたBannerには、あとからTroopやTacticを置くことはできません。
+            </p>
+          </article>
+          <article>
+            <h3>手番の流れ</h3>
+            <ol>
+              <li>自分の手札から1枚を使います。Troopは自陣に置き、Tacticは効果に従って使います。</li>
+              <li>必要ならSecureできるBannerをClaimします。Claimはカードを置く前でも後でもできます。</li>
+              <li>カードを1枚補充します。Troop deckかTactic deckを選べます。</li>
+              <li>End Turnで相手に手番を渡します。置ける場所がない場合もEnd Turnできます。</li>
+            </ol>
+          </article>
+          <article>
+            <h3>TroopとFormation</h3>
+            <p>
+              1つのBannerには通常3枚まで置けます。強さは
+              Royal Run、Triple、Color Guard、Run、Companyの順で比べます。
+              同じFormationなら合計値が高い方、それも同じなら先に完成していた側が優先されます。
+            </p>
+          </article>
+          <article>
+            <h3>BannerをSecureする</h3>
+            <p>
+              自分のFormationが完成していて、相手も完成している場合はその場で比較できます。
+              相手がまだ未完成でも、盤面・使用済みカード・Routedカードなどの公開情報から
+              <strong>相手がもう勝てない</strong>と証明できる場合はClaimできます。
+            </p>
+          </article>
+          <article>
+            <h3>証明の考え方</h3>
+            <p>
+              証明では、まだ見えていないTroopで相手が作れる最高のFormationを想定します。
+              その最高候補でも自分のFormationに届かない、または同じ強さでも自分が優先されるなら、
+              相手の枠が残っていてもBannerをSecureできます。
+            </p>
+          </article>
+          <article>
+            <h3>Tacticカード</h3>
+            <p>
+              Tacticは強力ですが、相手より2枚以上多く先行して使うことはできません。
+              Formation系TacticはBanner上のカードとして扱われ、Command系Tacticは移動・除去・偵察などの効果を解決します。
+            </p>
+          </article>
+          <article>
+            <h3>Weatherカード</h3>
+            <p>
+              MISTはそのBannerを合計値だけで比べる戦場に変えます。
+              BOGはそのBannerの上限を4枚にします。
+              どちらもOpen中のBannerにだけ使え、Secure済みのBannerの支配色は変わりません。
+            </p>
+          </article>
+          <article>
+            <h3>Undoと公開情報</h3>
+            <p>
+              Undoは直前の操作ミスを戻すための機能です。
+              ただし、Draw後やEnd Turn後は次の情報を見られてしまうためUndoできません。
+              Pathfinderは2枚を戻した直後だけ、戻すカードを選び直すためにUndoできます。
+            </p>
+          </article>
+          <article>
+            <h3>オンライン対戦</h3>
+            <p>
+              同じRoom URLを開くと対戦できます。最初の参加者がNorth、次がSouthです。
+              手札は自分だけに表示され、盤面はNew Game、End Turn、勝敗決定、勝敗後Undoのタイミングで同期されます。
+            </p>
+          </article>
+        </div>
+      </section>
+
       <section id="winOverlay" class="win-overlay" hidden>
         <div class="win-burst">
           <span>VICTORY</span>

@@ -1398,6 +1398,63 @@ h1 {
   text-transform: uppercase;
 }
 
+.rules-detail {
+  background: rgba(255, 250, 241, 0.86);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.rules-detail h2 {
+  font-size: 1rem;
+  margin: 0 0 10px;
+}
+
+.rules-detail-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.rules-detail article {
+  background: rgba(255, 255, 255, 0.52);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.rules-detail h3 {
+  color: var(--ink);
+  font-size: 0.92rem;
+  margin: 0 0 6px;
+}
+
+.rules-detail p,
+.rules-detail li {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.52;
+}
+
+.rules-detail p,
+.rules-detail ol {
+  margin: 0;
+}
+
+.rules-detail ol {
+  display: grid;
+  gap: 4px;
+  padding-left: 18px;
+}
+
+.rules-detail strong {
+  color: var(--ink);
+  font-weight: 900;
+}
+
 .win-overlay {
   align-items: center;
   background: rgba(32, 32, 30, 0.62);
@@ -1702,6 +1759,10 @@ h1 {
   }
 
   .rules-panel ol {
+    grid-template-columns: 1fr;
+  }
+
+  .rules-detail-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2061,12 +2122,18 @@ h1 {
   }
 
   .rules-panel,
-  .tactic-guide {
+  .tactic-guide,
+  .rules-detail {
     padding: 10px;
   }
 
   .rules-panel ol,
-  .tactic-guide-list {
+  .tactic-guide-list,
+  .rules-detail-grid {
     gap: 7px;
+  }
+
+  .rules-detail article {
+    padding: 8px;
   }
 }
