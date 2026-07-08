@@ -51,6 +51,7 @@ const state = {
   usedCommands: [],
   awaitingTurnStart: false,
   gameOverUndoState: null,
+  cpu: { enabled: false, player: null },
 };
 
 let undoSnapshot = null;
@@ -58,6 +59,8 @@ let scoutReturnSnapshot = null;
 let draggedCardId = null;
 let pointerDrag = null;
 let suppressCardClickUntil = 0;
+let cpuTurnTimer = null;
+let cpuThinking = false;
 let confirmingNewGame = false;
 let networkSeat = null;
 let networkReady = false;
@@ -95,6 +98,8 @@ const els = {
   newGameConfirm: document.querySelector("#newGameConfirm"),
   confirmNewGameButton: document.querySelector("#confirmNewGameButton"),
   cancelNewGameButton: document.querySelector("#cancelNewGameButton"),
+  cpuToggleButton: document.querySelector("#cpuToggleButton"),
+  cpuStatusText: document.querySelector("#cpuStatusText"),
   tacticGuideList: document.querySelector("#tacticGuideList"),
   winOverlay: document.querySelector("#winOverlay"),
   winnerName: document.querySelector("#winnerName"),
@@ -166,6 +171,7 @@ function shuffle(cards) {
 }
 
 function newGame(startingPlayerIndex = playerIndexForSeat(networkSeat) ?? 1) {
+  const cpuWasEnabled = isCpuEnabled() && !isNetworkMatch();
   confirmingNewGame = false;
   state.deck = shuffle(buildDeck());
   state.tacticDeck = shuffle(buildTacticDeck());
@@ -188,6 +194,10 @@ function newGame(startingPlayerIndex = playerIndexForSeat(networkSeat) ?? 1) {
   state.usedCommands = [];
   state.awaitingTurnStart = false;
   state.gameOverUndoState = null;
+  state.cpu = {
+    enabled: cpuWasEnabled,
+    player: cpuWasEnabled ? 1 - humanPlayerIndex() : null,
+  };
   state.message = `${state.players[state.active].name} begins. Play one card to any open banner, then draw.`;
   undoSnapshot = null;
   scoutReturnSnapshot = null;
@@ -225,16 +235,37 @@ function playerIndexForSeat(seat) {
   return null;
 }
 
+function cpuState() {
+  if (!state.cpu || typeof state.cpu !== "object") state.cpu = { enabled: false, player: null };
+  return state.cpu;
+}
+
+function humanPlayerIndex() {
+  const networkIndex = playerIndexForSeat(networkSeat);
+  return networkIndex ?? 1;
+}
+
+function isCpuEnabled() {
+  const cpu = cpuState();
+  return !isNetworkMatch() && Boolean(cpu.enabled) && Number.isInteger(cpu.player);
+}
+
+function isCpuTurn() {
+  return isCpuEnabled() && state.active === cpuState().player && !state.gameOver;
+}
+
 function isNetworkMatch() {
   return networkReady && (networkSeat === "North" || networkSeat === "South" || networkSeat === "Spectator");
 }
 
 function viewerPlayerIndex() {
+  if (isCpuEnabled()) return humanPlayerIndex();
   if (!isNetworkMatch()) return state.active;
   return playerIndexForSeat(networkSeat) ?? state.active;
 }
 
 function canActNow() {
+  if (isCpuTurn()) return false;
   if (!isNetworkMatch()) return true;
   return playerIndexForSeat(networkSeat) === state.active;
 }
@@ -1005,6 +1036,10 @@ function endTurn() {
     render();
     return;
   }
+  finishCurrentTurn();
+}
+
+function finishCurrentTurn() {
   state.lastTurnSummary = {
     player: state.active,
     events: state.turnEvents.length
@@ -1015,7 +1050,7 @@ function endTurn() {
   state.active = 1 - state.active;
   state.selectedCardId = null;
   state.hasPlayedThisTurn = false;
-  state.awaitingTurnStart = !isNetworkMatch();
+  state.awaitingTurnStart = !isNetworkMatch() && !isCpuEnabled();
   undoSnapshot = null;
   scoutReturnSnapshot = null;
   state.message = state.awaitingTurnStart
@@ -1030,6 +1065,272 @@ function revealTurnHand() {
   state.awaitingTurnStart = false;
   state.message = `${activePlayer().name}'s turn. Play one card to a banner.`;
   render();
+}
+
+function toggleCpuOpponent() {
+  if (isNetworkMatch()) {
+    state.message = "CPU opponent is only available while no online opponent is in the room.";
+    render();
+    return;
+  }
+  const cpu = cpuState();
+  if (cpu.enabled) {
+    cpu.enabled = false;
+    cpu.player = null;
+    cancelCpuTurn();
+    state.message = "CPU opponent disabled.";
+  } else {
+    cpu.enabled = true;
+    cpu.player = 1 - humanPlayerIndex();
+    state.awaitingTurnStart = false;
+    state.message = `${state.players[cpu.player].name} CPU joined the match.`;
+  }
+  render();
+}
+
+function cancelCpuTurn() {
+  if (cpuTurnTimer) window.clearTimeout(cpuTurnTimer);
+  cpuTurnTimer = null;
+  cpuThinking = false;
+}
+
+function scheduleCpuTurn() {
+  if (!isCpuTurn() || state.awaitingTurnStart || cpuThinking || cpuTurnTimer) return;
+  cpuTurnTimer = window.setTimeout(() => {
+    cpuTurnTimer = null;
+    runCpuTurn();
+  }, 650);
+}
+
+async function runCpuTurn() {
+  if (!isCpuTurn() || cpuThinking) return;
+  cpuThinking = true;
+  state.message = `${activePlayer().name} CPU is thinking...`;
+  render();
+  await delay(600);
+
+  if (!isCpuTurn() || state.gameOver) {
+    cpuThinking = false;
+    render();
+    return;
+  }
+
+  cpuClaimAvailable();
+  if (state.gameOver) {
+    cpuThinking = false;
+    render();
+    publishNetworkState("game-over");
+    return;
+  }
+
+  if (state.mustDraw) {
+    cpuDrawBestCard();
+    await delay(250);
+    finishCurrentTurn();
+    cpuThinking = false;
+    return;
+  }
+
+  if (!state.hasPlayedThisTurn && !activeSideFull()) {
+    const move = chooseCpuMove();
+    if (move) {
+      cpuPlayMove(move);
+      await delay(350);
+      cpuClaimAvailable();
+      if (state.gameOver) {
+        cpuThinking = false;
+        render();
+        publishNetworkState("game-over");
+        return;
+      }
+    }
+  }
+
+  if (state.mustDraw) {
+    cpuDrawBestCard();
+    await delay(250);
+  }
+  finishCurrentTurn();
+  cpuThinking = false;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function cpuClaimAvailable() {
+  let claimed = false;
+  for (let i = 0; i < 9; i += 1) {
+    if (!canClaim(state.active, i)) continue;
+    state.selectedBanner = i;
+    activePlayer().claimed.push(i);
+    addTurnEvent({
+      text: `CPU secured Banner ${i + 1}.`,
+      banners: [i],
+    });
+    claimed = true;
+    const winner = winnerIndex();
+    if (winner !== null) {
+      state.gameOverUndoState = null;
+      state.gameOver = true;
+      state.message = `${state.players[winner].name} wins the line.`;
+      showWinOverlayForCurrentViewer(winner);
+      return true;
+    }
+  }
+  if (claimed) state.message = `${activePlayer().name} CPU secured a banner.`;
+  return claimed;
+}
+
+function chooseCpuMove() {
+  const player = activePlayer();
+  let best = null;
+  player.hand.forEach((card) => {
+    for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
+      if (!cpuCanPlayCard(card, bannerIndex)) continue;
+      const score = cpuMoveScore(card, bannerIndex);
+      if (!best || score > best.score) best = { card, bannerIndex, score };
+    }
+  });
+  return best;
+}
+
+function cpuCanPlayCard(card, bannerIndex) {
+  if (!card || state.gameOver || state.pendingCommand || state.mustDraw || state.hasPlayedThisTurn) return false;
+  if (card.type !== "tactic") return canPlaceOnBanner(state.active, bannerIndex);
+  if (!canPlayTacticCard(card)) return false;
+  if (card.kind === "formation") return canPlaceOnBanner(state.active, bannerIndex);
+  if (card.kind === "environment") return canUseEnvironmentOnBanner(card, bannerIndex) && cpuShouldUseEnvironment(card, bannerIndex);
+  return false;
+}
+
+function cpuMoveScore(card, bannerIndex) {
+  const owner = claimOwner(bannerIndex);
+  const mine = state.players[state.active].rows[bannerIndex];
+  const theirs = state.players[1 - state.active].rows[bannerIndex];
+  const size = bannerSize(bannerIndex);
+  const nextMine = [...mine, card];
+  const centerBonus = 8 - Math.abs(4 - bannerIndex);
+  const ownerPenalty = owner === state.active ? -45 : owner === 1 - state.active ? -70 : 0;
+  const progressScore = nextMine.length * 18;
+  const threatScore = theirs.length === size - 1 && owner === null ? 42 : theirs.length * 8;
+  const claimLineScore = cpuLinePressureScore(bannerIndex);
+  let formationScore = cpuFormationValue(nextMine, bannerIndex);
+  if (nextMine.length === size) {
+    formationScore += 95;
+    if (cpuWouldClaimAfter(card, bannerIndex)) formationScore += 160;
+  }
+  if (card.type === "tactic") formationScore -= card.kind === "environment" ? 4 : 12;
+  return formationScore + progressScore + threatScore + claimLineScore + centerBonus + ownerPenalty;
+}
+
+function cpuFormationValue(cards, bannerIndex) {
+  const complete = formation(cards, bannerIndex);
+  if (complete) return complete.type * 70 + complete.total + complete.high;
+  const size = bannerSize(bannerIndex);
+  const knownRanks = cards.map((card) => card.rank ?? 5);
+  const rankTotal = knownRanks.reduce((sum, rank) => sum + rank, 0);
+  const colorBonus = cards.length > 1 && cards.every((card) => card.color && card.color === cards[0].color) ? 24 : 0;
+  const sortedRanks = [...knownRanks].sort((a, b) => a - b);
+  const nearRunBonus = sortedRanks.every((rank, index) => index === 0 || rank - sortedRanks[index - 1] <= 2) ? 18 : 0;
+  if (cards.length < size - 1) return rankTotal + colorBonus + nearRunBonus;
+  const possible = bestPossibleFormation(cards, availableForProof(bannerIndex), bannerIndex);
+  if (!possible) return cards.reduce((sum, card) => sum + (card.rank ?? 5), 0);
+  return possible.type * 42 + possible.total + possible.high;
+}
+
+function cpuLinePressureScore(bannerIndex) {
+  const claimed = new Set(state.players[state.active].claimed);
+  let score = 0;
+  for (const offset of [-2, -1, 0]) {
+    const line = [offset, offset + 1, offset + 2].map((step) => bannerIndex + step);
+    if (line.some((index) => index < 0 || index > 8)) continue;
+    const owned = line.filter((index) => claimed.has(index)).length;
+    if (owned === 2) score += 70;
+    else if (owned === 1) score += 18;
+  }
+  return score;
+}
+
+function cpuWouldClaimAfter(card, bannerIndex) {
+  const row = state.players[state.active].rows[bannerIndex];
+  const previousCounter = state.completionCounter;
+  const previousCompletedAt = state.players[state.active].completedAt[bannerIndex];
+  row.push(card);
+  if (row.length === bannerSize(bannerIndex)) {
+    state.completionCounter += 1;
+    state.players[state.active].completedAt[bannerIndex] = state.completionCounter;
+  }
+  const result = canClaim(state.active, bannerIndex);
+  row.pop();
+  state.completionCounter = previousCounter;
+  state.players[state.active].completedAt[bannerIndex] = previousCompletedAt;
+  return result;
+}
+
+function cpuShouldUseEnvironment(card, bannerIndex) {
+  const mine = state.players[state.active].rows[bannerIndex];
+  const theirs = state.players[1 - state.active].rows[bannerIndex];
+  if (card.effect === "mud") return theirs.length >= 2 && mine.length <= theirs.length;
+  if (card.effect === "fog") {
+    const mineTotal = mine.reduce((sum, item) => sum + (item.rank ?? 5), 0);
+    const theirTotal = theirs.reduce((sum, item) => sum + (item.rank ?? 5), 0);
+    return mine.length >= 2 && mineTotal >= theirTotal;
+  }
+  return false;
+}
+
+function cpuPlayMove(move) {
+  const player = activePlayer();
+  const cardIndex = player.hand.findIndex((card) => card.id === move.card.id);
+  if (cardIndex === -1) return;
+
+  if (move.card.type === "tactic") {
+    const played = commitTactic(cardIndex, move.bannerIndex);
+    if (played.kind === "environment") {
+      state.bannerEffects[move.bannerIndex][played.effect] = true;
+      state.players.forEach((targetPlayer) => {
+        if (targetPlayer.rows[move.bannerIndex].length < bannerSize(move.bannerIndex)) targetPlayer.completedAt[move.bannerIndex] = null;
+      });
+      addTurnEvent({ text: `CPU changed Banner ${move.bannerIndex + 1} with ${played.name}.`, banners: [move.bannerIndex] });
+    } else {
+      player.rows[move.bannerIndex].push(played);
+      markCompletedIfFull(state.active, move.bannerIndex);
+      addTurnEvent({
+        text: `CPU played ${played.name} on Banner ${move.bannerIndex + 1}.`,
+        banners: [move.bannerIndex],
+        lanes: [{ player: state.active, banner: move.bannerIndex }],
+      });
+    }
+  } else {
+    const [played] = player.hand.splice(cardIndex, 1);
+    player.rows[move.bannerIndex].push(played);
+    markCompletedIfFull(state.active, move.bannerIndex);
+    state.selectedCardId = null;
+    state.hasPlayedThisTurn = true;
+    state.mustDraw = state.deck.length > 0 || state.tacticDeck.length > 0;
+    addTurnEvent({
+      text: `CPU placed ${cardLabel(played)} on Banner ${move.bannerIndex + 1}.`,
+      banners: [move.bannerIndex],
+      lanes: [{ player: state.active, banner: move.bannerIndex }],
+    });
+    state.message = "CPU placed a card.";
+  }
+}
+
+function cpuDrawBestCard() {
+  if (!state.mustDraw || state.gameOver) return;
+  if (state.deck.length === 0 && state.tacticDeck.length > 0) {
+    drawTacticTo(state.active);
+    addTurnEvent({ text: "CPU drew a tactic card." });
+  } else {
+    drawTo(state.active);
+    addTurnEvent({ text: "CPU drew a troop card." });
+  }
+  undoSnapshot = null;
+  scoutReturnSnapshot = null;
+  state.mustDraw = false;
+  state.message = "CPU refilled its hand.";
 }
 
 function render() {
@@ -1082,6 +1383,8 @@ function render() {
     : actionBlocked || !undoSnapshot || (Boolean(state.pendingCommand) && !canUndoPendingScout);
   els.newGameButton.hidden = confirmingNewGame;
   els.newGameConfirm.hidden = !confirmingNewGame;
+  renderCpuControls();
+  scheduleCpuTurn();
 }
 
 function handleNewGameButton() {
@@ -1111,10 +1414,14 @@ function renderSelectedHint() {
 function renderTurnSummary(container) {
   container.innerHTML = "";
   const viewerIndex = viewerPlayerIndex();
-  const turnLabel = isNetworkMatch()
+  const turnLabel = isCpuTurn()
+    ? `CPU turn (${activePlayer().name})`
+    : isNetworkMatch()
     ? `Your side (${state.players[viewerIndex]?.name ?? "Spectator"}) / Current turn (${activePlayer().name})`
     : `Your turn (${activePlayer().name})`;
-  const detail = isNetworkMatch() && !canActNow()
+  const detail = isCpuTurn()
+    ? state.message
+    : isNetworkMatch() && !canActNow()
     ? `${networkBlockedMessage()} ${state.message}`
     : state.message;
   appendTurnSummaryBlock(container, turnLabel, detail, "current-turn-line");
@@ -1137,6 +1444,22 @@ function appendTurnSummaryBlock(container, label, detail, className) {
   container.append(line);
 }
 
+function renderCpuControls() {
+  if (!els.cpuToggleButton || !els.cpuStatusText) return;
+  const cpu = cpuState();
+  const unavailable = isNetworkMatch();
+  els.cpuToggleButton.disabled = unavailable;
+  els.cpuToggleButton.classList.toggle("cpu-active", cpu.enabled && !unavailable);
+  els.cpuToggleButton.textContent = cpu.enabled && !unavailable ? "CPU: ON" : "CPU Opponent";
+  if (unavailable) {
+    els.cpuStatusText.textContent = "Online opponent connected";
+  } else if (cpu.enabled) {
+    els.cpuStatusText.textContent = `${state.players[cpu.player]?.name ?? "CPU"} is controlled by CPU`;
+  } else {
+    els.cpuStatusText.textContent = "Solo only";
+  }
+}
+
 function exportNetworkState() {
   return JSON.parse(JSON.stringify(state));
 }
@@ -1145,6 +1468,10 @@ function applyNetworkState(remoteState) {
   if (!remoteState || typeof remoteState !== "object") return;
   applyingRemoteState = true;
   Object.assign(state, JSON.parse(JSON.stringify(remoteState)));
+  if (networkReady && state.cpu?.enabled) {
+    state.cpu.enabled = false;
+    state.cpu.player = null;
+  }
   state.selectedCardId = null;
   confirmingNewGame = false;
   undoSnapshot = null;
@@ -1161,6 +1488,12 @@ function applyNetworkState(remoteState) {
 function setNetworkInfo(seat, ready) {
   networkSeat = seat || null;
   networkReady = Boolean(ready);
+  if (networkReady && cpuState().enabled) {
+    cancelCpuTurn();
+    state.cpu.enabled = false;
+    state.cpu.player = null;
+    state.message = "Online opponent joined. CPU opponent disabled.";
+  }
   render();
 }
 
@@ -1853,6 +2186,7 @@ els.undoButton.addEventListener("click", undoLastAction);
 els.newGameButton.addEventListener("click", handleNewGameButton);
 els.confirmNewGameButton.addEventListener("click", () => newGame());
 els.cancelNewGameButton.addEventListener("click", cancelNewGameConfirm);
+els.cpuToggleButton?.addEventListener("click", toggleCpuOpponent);
 els.turnPassButton.addEventListener("click", revealTurnHand);
 els.turnPassOverlay.addEventListener("click", revealTurnHand);
 els.winOverlay.addEventListener("click", hideWinOverlay);

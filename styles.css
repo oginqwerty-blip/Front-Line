@@ -341,6 +341,32 @@ h1 {
   padding: 6px 10px;
 }
 
+.cpu-control {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-bottom: 8px;
+}
+
+.cpu-control .secondary-button {
+  min-height: 30px;
+  padding: 6px 10px;
+}
+
+.cpu-control .secondary-button.cpu-active {
+  background: color-mix(in srgb, var(--danger) 16%, var(--surface-strong));
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--line));
+  color: var(--danger);
+}
+
+.cpu-control span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
 .network-clients {
   display: grid;
   gap: 6px;
@@ -1981,6 +2007,21 @@ body.touch-card-dragging {
     font-size: 0.58rem;
     min-height: 22px;
     padding: 4px 7px;
+  }
+
+  .cpu-control {
+    gap: 4px;
+    margin-bottom: 5px;
+  }
+
+  .cpu-control .secondary-button {
+    font-size: 0.58rem;
+    min-height: 22px;
+    padding: 4px 7px;
+  }
+
+  .cpu-control span {
+    font-size: 0.54rem;
   }
 
   .network-client {
