@@ -48,6 +48,11 @@ const CPU_DEFAULT_WEIGHTS = {
   nearRunPartial: 18,
   twoInLine: 70,
   oneInLine: 18,
+  scoutValue: 34,
+  routValue: 58,
+  turnoverValue: 66,
+  redeployValue: 42,
+  commandTempo: 18,
 };
 
 let cpuWeights = { ...CPU_DEFAULT_WEIGHTS };
@@ -1259,10 +1264,15 @@ function chooseCpuMove() {
   const player = activePlayer();
   let best = null;
   player.hand.forEach((card) => {
+    if (card.type === "tactic" && card.kind === "command") {
+      const command = chooseCpuCommandMove(card);
+      if (command && (!best || command.score > best.score)) best = command;
+      return;
+    }
     for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
       if (!cpuCanPlayCard(card, bannerIndex)) continue;
       const score = cpuMoveScore(card, bannerIndex);
-      if (!best || score > best.score) best = { card, bannerIndex, score };
+      if (!best || score > best.score) best = { type: "place", card, bannerIndex, score };
     }
   });
   return best;
@@ -1275,6 +1285,74 @@ function cpuCanPlayCard(card, bannerIndex) {
   if (card.kind === "formation") return canPlaceOnBanner(state.active, bannerIndex);
   if (card.kind === "environment") return canUseEnvironmentOnBanner(card, bannerIndex) && cpuShouldUseEnvironment(card, bannerIndex);
   return false;
+}
+
+function chooseCpuCommandMove(card) {
+  if (!canPlayTacticCard(card) || state.gameOver || state.pendingCommand || state.mustDraw || state.hasPlayedThisTurn) return null;
+  if (card.effect === "scout") return chooseCpuScoutMove(card);
+  if (card.effect === "deserter") return chooseCpuRoutMove(card);
+  if (card.effect === "traitor") return chooseCpuTurnoverMove(card);
+  if (card.effect === "redeploy") return chooseCpuRedeployMove(card);
+  return null;
+}
+
+function chooseCpuScoutMove(card) {
+  if (state.deck.length + state.tacticDeck.length < 3) return null;
+  return { type: "scout", card, score: cpuWeight("scoutValue") + cpuWeight("commandTempo") };
+}
+
+function chooseCpuRoutMove(card) {
+  let best = null;
+  const opponent = 1 - state.active;
+  for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
+    if (claimOwner(bannerIndex) !== null) continue;
+    state.players[opponent].rows[bannerIndex].forEach((target, cardIndex) => {
+      const score = cpuWeight("routValue") + cpuBoardCardThreat(opponent, bannerIndex, target) + state.players[opponent].rows[bannerIndex].length * cpuWeight("threatPerCard");
+      if (!best || score > best.score) best = { type: "rout", card, targetPlayer: opponent, bannerIndex, cardIndex, score };
+    });
+  }
+  return best;
+}
+
+function chooseCpuTurnoverMove(card) {
+  let best = null;
+  const opponent = 1 - state.active;
+  for (let sourceBanner = 0; sourceBanner < 9; sourceBanner += 1) {
+    if (claimOwner(sourceBanner) !== null) continue;
+    state.players[opponent].rows[sourceBanner].forEach((target, cardIndex) => {
+      if (target.type !== "troop") return;
+      for (let destinationBanner = 0; destinationBanner < 9; destinationBanner += 1) {
+        if (!canPlaceOnBanner(state.active, destinationBanner)) continue;
+        const gain = cpuMoveScore(target, destinationBanner);
+        const denial = cpuBoardCardThreat(opponent, sourceBanner, target);
+        const score = cpuWeight("turnoverValue") + gain + denial;
+        if (!best || score > best.score) {
+          best = { type: "turnover", card, targetPlayer: opponent, sourceBanner, cardIndex, destinationBanner, score };
+        }
+      }
+    });
+  }
+  return best;
+}
+
+function chooseCpuRedeployMove(card) {
+  let best = null;
+  const player = state.active;
+  for (let sourceBanner = 0; sourceBanner < 9; sourceBanner += 1) {
+    if (claimOwner(sourceBanner) !== null) continue;
+    state.players[player].rows[sourceBanner].forEach((target, cardIndex) => {
+      for (let destinationBanner = 0; destinationBanner < 9; destinationBanner += 1) {
+        if (destinationBanner === sourceBanner || !canPlaceOnBanner(player, destinationBanner)) continue;
+        const gain = cpuMoveScore(target, destinationBanner);
+        const current = cpuBoardCardThreat(player, sourceBanner, target);
+        const score = cpuWeight("redeployValue") + gain - current;
+        if (score > cpuWeight("redeployValue") && (!best || score > best.score)) {
+          best = { type: "redeploy", card, targetPlayer: player, sourceBanner, cardIndex, destinationBanner, score };
+        }
+      }
+    });
+  }
+  return best;
 }
 
 function cpuMoveScore(card, bannerIndex) {
@@ -1301,6 +1379,14 @@ function cpuMoveScore(card, bannerIndex) {
   }
   if (card.type === "tactic") formationScore -= card.kind === "environment" ? cpuWeight("environmentPenalty") : cpuWeight("tacticPenalty");
   return formationScore + progressScore + threatScore + claimLineScore + centerBonus + ownerPenalty;
+}
+
+function cpuBoardCardThreat(playerIndex, bannerIndex, card) {
+  const row = state.players[playerIndex].rows[bannerIndex];
+  const value = (card.rank ?? 5) * cpuWeight("high");
+  const formationValue = cpuFormationValue(row, bannerIndex);
+  const nearComplete = row.length >= bannerSize(bannerIndex) - 1 ? cpuWeight("immediateThreat") : row.length * cpuWeight("threatPerCard");
+  return value + formationValue / Math.max(1, row.length) + nearComplete;
 }
 
 function cpuFormationValue(cards, bannerIndex) {
@@ -1364,6 +1450,23 @@ function cpuPlayMove(move) {
   const cardIndex = player.hand.findIndex((card) => card.id === move.card.id);
   if (cardIndex === -1) return;
 
+  if (move.type === "scout") {
+    cpuPlayScout(cardIndex);
+    return;
+  }
+  if (move.type === "rout") {
+    cpuPlayRout(cardIndex, move);
+    return;
+  }
+  if (move.type === "turnover") {
+    cpuPlayTurnover(cardIndex, move);
+    return;
+  }
+  if (move.type === "redeploy") {
+    cpuPlayRedeploy(cardIndex, move);
+    return;
+  }
+
   if (move.card.type === "tactic") {
     const played = commitTactic(cardIndex, move.bannerIndex);
     if (played.kind === "environment") {
@@ -1397,9 +1500,102 @@ function cpuPlayMove(move) {
   }
 }
 
+function cpuPlayScout(cardIndex) {
+  const played = commitTactic(cardIndex);
+  state.mustDraw = false;
+  const drawn = [];
+  for (let i = 0; i < 3; i += 1) {
+    const card = state.deck.length > 0 ? drawTo(state.active) : drawTacticTo(state.active);
+    if (card) drawn.push(card);
+  }
+  const returned = [...drawn]
+    .sort((a, b) => cpuScoutKeepScore(a) - cpuScoutKeepScore(b))
+    .slice(0, 2);
+  returned.forEach((card) => {
+    const index = activePlayer().hand.findIndex((item) => item.id === card.id);
+    if (index !== -1) activePlayer().hand.splice(index, 1);
+  });
+  placeScoutReturnedCardsOnDecks(returned);
+  addTurnEvent({ text: `CPU used ${played.name} and returned two drawn cards.` });
+  state.message = "CPU used Pathfinder.";
+}
+
+function cpuScoutKeepScore(card) {
+  if (card.type === "tactic") {
+    if (card.kind === "command") return cpuWeight("commandTempo");
+    if (card.kind === "environment") return cpuWeight("environmentPenalty");
+    return cpuWeight("completeFormationType") * 0.35;
+  }
+  let best = 0;
+  for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
+    if (!canPlaceOnBanner(state.active, bannerIndex)) continue;
+    best = Math.max(best, cpuMoveScore(card, bannerIndex));
+  }
+  return best;
+}
+
+function cpuPlayRout(cardIndex, move) {
+  const tactic = commitTactic(cardIndex);
+  const row = state.players[move.targetPlayer].rows[move.bannerIndex];
+  const [removed] = row.splice(move.cardIndex, 1);
+  state.players[move.targetPlayer].completedAt[move.bannerIndex] = null;
+  state.routedCards.push({
+    card: removed,
+    fromPlayer: move.targetPlayer,
+    banner: move.bannerIndex,
+    byPlayer: state.active,
+  });
+  addTurnEvent({
+    text: `CPU used ${tactic.name} to remove ${cardLabel(removed)} from Banner ${move.bannerIndex + 1}.`,
+    banners: [move.bannerIndex],
+    lanes: [{ player: move.targetPlayer, banner: move.bannerIndex }],
+  });
+  state.message = "CPU used Rout.";
+}
+
+function cpuPlayTurnover(cardIndex, move) {
+  const tactic = commitTactic(cardIndex);
+  const sourceRow = state.players[move.targetPlayer].rows[move.sourceBanner];
+  const [flipped] = sourceRow.splice(move.cardIndex, 1);
+  state.players[move.targetPlayer].completedAt[move.sourceBanner] = null;
+  state.players[state.active].rows[move.destinationBanner].push(flipped);
+  markCompletedIfFull(state.active, move.destinationBanner);
+  addTurnEvent({
+    text: `CPU used ${tactic.name} to flip ${cardLabel(flipped)} to Banner ${move.destinationBanner + 1}.`,
+    banners: [...new Set([move.sourceBanner, move.destinationBanner])],
+    lanes: [
+      { player: move.targetPlayer, banner: move.sourceBanner },
+      { player: state.active, banner: move.destinationBanner },
+    ],
+  });
+  state.message = "CPU used Turnover.";
+}
+
+function cpuPlayRedeploy(cardIndex, move) {
+  const tactic = commitTactic(cardIndex);
+  const sourceRow = state.players[state.active].rows[move.sourceBanner];
+  const [moved] = sourceRow.splice(move.cardIndex, 1);
+  state.players[state.active].completedAt[move.sourceBanner] = null;
+  state.players[state.active].rows[move.destinationBanner].push(moved);
+  markCompletedIfFull(state.active, move.destinationBanner);
+  addTurnEvent({
+    text: `CPU used ${tactic.name} to move ${cardLabel(moved)} to Banner ${move.destinationBanner + 1}.`,
+    banners: [...new Set([move.sourceBanner, move.destinationBanner])],
+    lanes: [
+      { player: state.active, banner: move.sourceBanner },
+      { player: state.active, banner: move.destinationBanner },
+    ],
+  });
+  state.message = "CPU used Forced March.";
+}
+
 function cpuDrawBestCard() {
   if (!state.mustDraw || state.gameOver) return;
-  if (state.deck.length === 0 && state.tacticDeck.length > 0) {
+  const tacticCards = activePlayer().hand.filter((card) => card.type === "tactic").length;
+  const canDrawTactic = state.tacticDeck.length > 0
+    && tacticCards < 2
+    && activePlayer().tacticsPlayed <= inactivePlayer().tacticsPlayed;
+  if (canDrawTactic || (state.deck.length === 0 && state.tacticDeck.length > 0)) {
     drawTacticTo(state.active);
     addTurnEvent({ text: "CPU drew a tactic card." });
   } else {
