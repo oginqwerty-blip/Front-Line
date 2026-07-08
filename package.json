@@ -5,7 +5,8 @@
   "description": "Front-Line browser card game with local/online room sync.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "train:cpu": "node tools/train-cpu.js --write"
   },
   "engines": {
     "node": ">=18"

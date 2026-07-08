@@ -28,6 +28,30 @@ const TACTICS = [
   { id: "turncoat", name: "Turnover", kind: "command", effect: "traitor", text: "Flip one opposing troop card to your side of an unclaimed banner." },
 ];
 
+const CPU_DEFAULT_WEIGHTS = {
+  center: 1,
+  ownClaimedPenalty: -45,
+  opponentClaimedPenalty: -70,
+  progress: 18,
+  immediateThreat: 42,
+  threatPerCard: 8,
+  completeBonus: 95,
+  claimBonus: 160,
+  tacticPenalty: 12,
+  environmentPenalty: 4,
+  completeFormationType: 70,
+  possibleFormationType: 42,
+  total: 1,
+  high: 1,
+  rankTotal: 1,
+  sameColorPartial: 24,
+  nearRunPartial: 18,
+  twoInLine: 70,
+  oneInLine: 18,
+};
+
+let cpuWeights = { ...CPU_DEFAULT_WEIGHTS };
+
 const state = {
   players: [
     { name: "North", hand: [], rows: Array.from({ length: 9 }, () => []), completedAt: Array(9).fill(null), claimed: [], tacticsPlayed: 0, leaderPlayed: false },
@@ -240,6 +264,23 @@ function playerIndexForSeat(seat) {
 function cpuState() {
   if (!state.cpu || typeof state.cpu !== "object") state.cpu = { enabled: false, player: null };
   return state.cpu;
+}
+
+function cpuWeight(name) {
+  const value = cpuWeights[name];
+  return Number.isFinite(value) ? value : CPU_DEFAULT_WEIGHTS[name] ?? 0;
+}
+
+async function loadCpuWeights() {
+  try {
+    const response = await fetch("./cpu-weights.json", { cache: "no-store" });
+    if (!response.ok) return;
+    const loaded = await response.json();
+    if (!loaded || typeof loaded !== "object") return;
+    cpuWeights = { ...CPU_DEFAULT_WEIGHTS, ...loaded };
+  } catch {
+    cpuWeights = { ...CPU_DEFAULT_WEIGHTS };
+  }
 }
 
 function humanPlayerIndex() {
@@ -1242,33 +1283,39 @@ function cpuMoveScore(card, bannerIndex) {
   const theirs = state.players[1 - state.active].rows[bannerIndex];
   const size = bannerSize(bannerIndex);
   const nextMine = [...mine, card];
-  const centerBonus = 8 - Math.abs(4 - bannerIndex);
-  const ownerPenalty = owner === state.active ? -45 : owner === 1 - state.active ? -70 : 0;
-  const progressScore = nextMine.length * 18;
-  const threatScore = theirs.length === size - 1 && owner === null ? 42 : theirs.length * 8;
+  const centerBonus = (8 - Math.abs(4 - bannerIndex)) * cpuWeight("center");
+  const ownerPenalty = owner === state.active
+    ? cpuWeight("ownClaimedPenalty")
+    : owner === 1 - state.active
+    ? cpuWeight("opponentClaimedPenalty")
+    : 0;
+  const progressScore = nextMine.length * cpuWeight("progress");
+  const threatScore = theirs.length === size - 1 && owner === null
+    ? cpuWeight("immediateThreat")
+    : theirs.length * cpuWeight("threatPerCard");
   const claimLineScore = cpuLinePressureScore(bannerIndex);
   let formationScore = cpuFormationValue(nextMine, bannerIndex);
   if (nextMine.length === size) {
-    formationScore += 95;
-    if (cpuWouldClaimAfter(card, bannerIndex)) formationScore += 160;
+    formationScore += cpuWeight("completeBonus");
+    if (cpuWouldClaimAfter(card, bannerIndex)) formationScore += cpuWeight("claimBonus");
   }
-  if (card.type === "tactic") formationScore -= card.kind === "environment" ? 4 : 12;
+  if (card.type === "tactic") formationScore -= card.kind === "environment" ? cpuWeight("environmentPenalty") : cpuWeight("tacticPenalty");
   return formationScore + progressScore + threatScore + claimLineScore + centerBonus + ownerPenalty;
 }
 
 function cpuFormationValue(cards, bannerIndex) {
   const complete = formation(cards, bannerIndex);
-  if (complete) return complete.type * 70 + complete.total + complete.high;
+  if (complete) return complete.type * cpuWeight("completeFormationType") + complete.total * cpuWeight("total") + complete.high * cpuWeight("high");
   const size = bannerSize(bannerIndex);
   const knownRanks = cards.map((card) => card.rank ?? 5);
   const rankTotal = knownRanks.reduce((sum, rank) => sum + rank, 0);
-  const colorBonus = cards.length > 1 && cards.every((card) => card.color && card.color === cards[0].color) ? 24 : 0;
+  const colorBonus = cards.length > 1 && cards.every((card) => card.color && card.color === cards[0].color) ? cpuWeight("sameColorPartial") : 0;
   const sortedRanks = [...knownRanks].sort((a, b) => a - b);
-  const nearRunBonus = sortedRanks.every((rank, index) => index === 0 || rank - sortedRanks[index - 1] <= 2) ? 18 : 0;
-  if (cards.length < size - 1) return rankTotal + colorBonus + nearRunBonus;
+  const nearRunBonus = sortedRanks.every((rank, index) => index === 0 || rank - sortedRanks[index - 1] <= 2) ? cpuWeight("nearRunPartial") : 0;
+  if (cards.length < size - 1) return rankTotal * cpuWeight("rankTotal") + colorBonus + nearRunBonus;
   const possible = bestPossibleFormation(cards, availableForProof(bannerIndex), bannerIndex);
   if (!possible) return cards.reduce((sum, card) => sum + (card.rank ?? 5), 0);
-  return possible.type * 42 + possible.total + possible.high;
+  return possible.type * cpuWeight("possibleFormationType") + possible.total * cpuWeight("total") + possible.high * cpuWeight("high");
 }
 
 function cpuLinePressureScore(bannerIndex) {
@@ -1278,8 +1325,8 @@ function cpuLinePressureScore(bannerIndex) {
     const line = [offset, offset + 1, offset + 2].map((step) => bannerIndex + step);
     if (line.some((index) => index < 0 || index > 8)) continue;
     const owned = line.filter((index) => claimed.has(index)).length;
-    if (owned === 2) score += 70;
-    else if (owned === 1) score += 18;
+    if (owned === 2) score += cpuWeight("twoInLine");
+    else if (owned === 1) score += cpuWeight("oneInLine");
   }
   return score;
 }
@@ -2242,5 +2289,6 @@ els.boardShell.addEventListener("drop", (event) => {
   if (cardId) playCommandCardById(cardId);
 });
 
+loadCpuWeights();
 renderTacticGuide();
 newGame();
