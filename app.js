@@ -22,7 +22,7 @@ const TACTICS = [
   { id: "squires", name: "Little Shields", kind: "formation", wild: "rank123", text: "Rank 1, 2, or 3, any color." },
   { id: "mist", name: "Mistfall", kind: "environment", effect: "fog", text: "This banner is won by total strength only." },
   { id: "bog", name: "Bogland", kind: "environment", effect: "mud", text: "This banner needs four cards on each side." },
-  { id: "scout", name: "Pathfinder", kind: "command", effect: "scout", text: "Draw three cards, then return two cards from your hand." },
+  { id: "scout", name: "Pathfinder", kind: "command", effect: "scout", text: "Draw three cards, then return two of those cards to the top of their decks." },
   { id: "shift", name: "Forced March", kind: "command", effect: "redeploy", text: "Move one of your unclaimed banner cards, or discard it." },
   { id: "rout", name: "Rout", kind: "command", effect: "deserter", text: "Discard one opposing card from an unclaimed banner." },
   { id: "turncoat", name: "Turnover", kind: "command", effect: "traitor", text: "Flip one opposing troop card to your side of an unclaimed banner." },
@@ -214,11 +214,13 @@ function newGame(startingPlayerIndex = playerIndexForSeat(networkSeat) ?? 1) {
 function drawTo(playerIndex) {
   const card = state.deck.shift();
   if (card) state.players[playerIndex].hand.push(card);
+  return card ?? null;
 }
 
 function drawTacticTo(playerIndex) {
   const card = state.tacticDeck.shift();
   if (card) state.players[playerIndex].hand.push(card);
+  return card ?? null;
 }
 
 function activePlayer() {
@@ -667,7 +669,14 @@ function playCommandTactic(card, cardIndex) {
     saveUndo();
     const played = commitTactic(cardIndex);
     state.mustDraw = false;
-    state.pendingCommand = { effect: "scout", step: "draw", drawsRemaining: 3, returnsRemaining: 2 };
+    state.pendingCommand = {
+      effect: "scout",
+      step: "draw",
+      drawsRemaining: 3,
+      returnsRemaining: 2,
+      drawnCardIds: [],
+      returnedCards: [],
+    };
     addTurnEvent({ text: `Played ${played.name}.` });
     state.message = "Pathfinder: draw three cards from either deck.";
     render();
@@ -971,21 +980,23 @@ function scoutDraw(deckType) {
     return;
   }
   if (state.gameOver || state.pendingCommand?.effect !== "scout" || state.pendingCommand.step !== "draw") return;
+  let drawn = null;
   if (deckType === "troop") {
     if (state.deck.length === 0) {
       state.message = "The troop deck is empty. Draw from tactics.";
       render();
       return;
     }
-    drawTo(state.active);
+    drawn = drawTo(state.active);
   } else {
     if (state.tacticDeck.length === 0) {
       state.message = "The tactic deck is empty. Draw from troops.";
       render();
       return;
     }
-    drawTacticTo(state.active);
+    drawn = drawTacticTo(state.active);
   }
+  if (drawn) state.pendingCommand.drawnCardIds.push(drawn.id);
   undoSnapshot = null;
   addTurnEvent({ text: `Pathfinder drew a ${deckType === "troop" ? "troop" : "tactic"} card.` });
   state.pendingCommand.drawsRemaining -= 1;
@@ -993,10 +1004,18 @@ function scoutDraw(deckType) {
     state.message = `Pathfinder: draw ${state.pendingCommand.drawsRemaining} more card${state.pendingCommand.drawsRemaining === 1 ? "" : "s"}.`;
   } else {
     state.pendingCommand.step = "return";
-    state.message = "Pathfinder: click two cards in your hand to return to their decks.";
+    state.message = "Pathfinder: return two of the three drawn cards.";
     scoutReturnSnapshot = JSON.stringify(state);
   }
   render();
+}
+
+function canReturnScoutCard(card) {
+  return Boolean(card)
+    && canActNow()
+    && state.pendingCommand?.effect === "scout"
+    && state.pendingCommand.step === "return"
+    && (state.pendingCommand.drawnCardIds ?? []).includes(card.id);
 }
 
 function returnScoutCard(cardId) {
@@ -1006,22 +1025,35 @@ function returnScoutCard(cardId) {
     return;
   }
   if (state.pendingCommand?.effect !== "scout" || state.pendingCommand.step !== "return") return;
+  if (!(state.pendingCommand.drawnCardIds ?? []).includes(cardId)) {
+    state.message = "Pathfinder can only return cards drawn by Pathfinder.";
+    render();
+    return;
+  }
   const player = activePlayer();
   const index = player.hand.findIndex((card) => card.id === cardId);
   if (index === -1) return;
   const [card] = player.hand.splice(index, 1);
-  if (card.type === "tactic") state.tacticDeck.push(card);
-  else state.deck.push(card);
+  state.pendingCommand.drawnCardIds = state.pendingCommand.drawnCardIds.filter((id) => id !== card.id);
+  state.pendingCommand.returnedCards.push(card);
   state.pendingCommand.returnsRemaining -= 1;
   if (state.pendingCommand.returnsRemaining > 0) {
-    state.message = "Pathfinder: return one more card from your hand.";
+    state.message = "Pathfinder: return one more card drawn by Pathfinder.";
   } else {
+    placeScoutReturnedCardsOnDecks(state.pendingCommand.returnedCards);
     addTurnEvent({ text: "Pathfinder returned two cards." });
     state.pendingCommand = null;
     undoSnapshot = scoutReturnSnapshot;
     state.message = "Pathfinder resolved. End your turn.";
   }
   render();
+}
+
+function placeScoutReturnedCardsOnDecks(cards) {
+  [...cards].reverse().forEach((card) => {
+    if (card.type === "tactic") state.tacticDeck.unshift(card);
+    else state.deck.unshift(card);
+  });
 }
 
 function endTurn() {
@@ -1880,7 +1912,8 @@ function renderHand() {
     .hand.slice()
     .sort((a, b) => cardSortKey(a).localeCompare(cardSortKey(b)))
     .forEach((card) => {
-      const canReturnScout = canActNow() && state.pendingCommand?.effect === "scout" && state.pendingCommand.step === "return";
+      const canReturnScout = canReturnScoutCard(card);
+      const scoutReturning = canActNow() && state.pendingCommand?.effect === "scout" && state.pendingCommand.step === "return";
       const button = document.createElement("button");
       button.type = "button";
       button.className = [
@@ -1904,7 +1937,7 @@ function renderHand() {
         draggedCardId = null;
       });
       button.addEventListener("pointerdown", (event) => {
-        if (canReturnScout) return;
+        if (scoutReturning) return;
         beginPointerCardDrag(event, card, button);
       });
       button.addEventListener("click", () => {
@@ -2108,7 +2141,7 @@ function tacticTooltipText(card) {
 function tacticUseTextForCard(card) {
   if (card.kind === "formation") return "Play it to one of your banner lanes as your card for the turn.";
   if (card.kind === "environment") return "Drop or play it on an open banner to change that banner's rule.";
-  if (card.effect === "scout") return "Drop it on the board, then draw three cards and return two cards.";
+  if (card.effect === "scout") return "Drop it on the board, draw three cards, then return two of those drawn cards to the top of their decks.";
   if (card.effect === "redeploy") return "Drop it on the board, choose one of your unclaimed cards, then move or discard it.";
   if (card.effect === "deserter") return "Drop it on the board, then choose one opposing unclaimed card to remove.";
   if (card.effect === "traitor") return "Drop it on the board, then flip one opposing troop card to your side.";
