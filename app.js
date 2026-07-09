@@ -45,7 +45,9 @@ const CPU_DEFAULT_WEIGHTS = {
   high: 1,
   rankTotal: 1,
   sameColorPartial: 24,
+  sameRankPartial: 40,
   nearRunPartial: 18,
+  royalRunPartial: 52,
   twoInLine: 70,
   oneInLine: 18,
   scoutValue: 34,
@@ -58,13 +60,18 @@ const CPU_DEFAULT_WEIGHTS = {
   winningWait: 80,
   liveOutValue: 9,
   positionClaim: 260,
+  royalRunWaitBonus: 75,
+  tripleWaitBonus: 55,
+  colorGuardTax: 30,
 };
 
 const CPU_LOOKAHEAD_DEPTH = 3;
 const CPU_ROOT_BRANCH_LIMIT = 7;
 const CPU_REPLY_BRANCH_LIMIT = 4;
+const CPU_SEARCH_TIME_LIMIT_MS = 650;
 
 let cpuWeights = { ...CPU_DEFAULT_WEIGHTS };
+let cpuSearchDeadline = 0;
 
 const state = {
   players: [
@@ -1270,13 +1277,47 @@ function cpuClaimAvailable() {
 }
 
 function chooseCpuMove({ includeLookahead = true, depth = CPU_LOOKAHEAD_DEPTH } = {}) {
+  if (includeLookahead) cpuSearchDeadline = Date.now() + CPU_SEARCH_TIME_LIMIT_MS;
   const moves = cpuRankedCandidateMoves(includeLookahead ? CPU_ROOT_BRANCH_LIMIT : Number.POSITIVE_INFINITY);
+  if (!includeLookahead) return moves[0] ? { ...moves[0], baseScore: moves[0].score } : null;
+  let best = cpuBestDamageControlMove(moves);
+  for (const move of moves) {
+    if (cpuSearchTimedOut()) break;
+    const scored = cpuScoreWithSearch(move, depth);
+    if (!best || scored.score > best.score) best = scored;
+  }
+  cpuSearchDeadline = 0;
+  return best;
+}
+
+function cpuSearchTimedOut() {
+  return cpuSearchDeadline > 0 && Date.now() > cpuSearchDeadline;
+}
+
+function cpuBestDamageControlMove(moves) {
   let best = null;
   for (const move of moves) {
-    const scored = includeLookahead ? cpuScoreWithSearch(move, depth) : { ...move, baseScore: move.score };
+    const score = cpuDamageControlScore(move);
+    const scored = { ...move, baseScore: move.score, searchScore: score, score };
     if (!best || scored.score > best.score) best = scored;
   }
   return best;
+}
+
+function cpuDamageControlScore(move) {
+  const snapshot = JSON.stringify(state);
+  const rootPlayer = state.active;
+  let score = move.score;
+  try {
+    if (!cpuApplyMoveForLookahead(move)) return score;
+    cpuClaimAllForLookahead(rootPlayer);
+    state.active = 1 - rootPlayer;
+    cpuClaimAllForLookahead(state.active);
+    score = move.score * 0.2 + cpuFastPositionScore(rootPlayer);
+  } finally {
+    Object.assign(state, JSON.parse(snapshot));
+  }
+  return score;
 }
 
 function cpuRankedCandidateMoves(limit = CPU_REPLY_BRANCH_LIMIT) {
@@ -1329,6 +1370,7 @@ function cpuSearchAfterMove(move, depth) {
 }
 
 function cpuMinimax(rootPlayer, depth, alpha, beta) {
+  if (cpuSearchTimedOut()) return cpuFastPositionScore(rootPlayer);
   cpuClaimAllForLookahead(state.active);
   const winner = winnerIndex();
   if (winner !== null) return winner === rootPlayer ? 100000 : -100000;
@@ -1569,6 +1611,30 @@ function cpuEvaluatePosition(rootPlayer) {
   return score;
 }
 
+function cpuFastPositionScore(rootPlayer) {
+  const opponent = 1 - rootPlayer;
+  let score = (state.players[rootPlayer].claimed.length - state.players[opponent].claimed.length) * cpuWeight("positionClaim");
+  score += cpuClaimedLineScore(rootPlayer) - cpuClaimedLineScore(opponent);
+  for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
+    const owner = claimOwner(bannerIndex);
+    if (owner === rootPlayer) score += cpuWeight("positionClaim") * 0.5;
+    else if (owner === opponent) score -= cpuWeight("positionClaim") * 0.75;
+    else {
+      score += cpuFastRowScore(rootPlayer, bannerIndex);
+      score -= cpuFastRowScore(opponent, bannerIndex) * 1.1;
+    }
+  }
+  return score;
+}
+
+function cpuFastRowScore(playerIndex, bannerIndex) {
+  const row = state.players[playerIndex].rows[bannerIndex];
+  if (row.length === 0) return 0;
+  const complete = formation(row, bannerIndex);
+  if (complete) return complete.type * cpuWeight("completeFormationType") + row.length * cpuWeight("progress");
+  return row.length * cpuWeight("progress") + cpuPartialShapeScore(row);
+}
+
 function cpuRowPositionScore(playerIndex, bannerIndex) {
   const row = state.players[playerIndex].rows[bannerIndex];
   if (row.length === 0) return 0;
@@ -1601,19 +1667,34 @@ function cpuFormationValue(cards, bannerIndex, playerIndex = state.active) {
   const size = bannerSize(bannerIndex);
   const knownRanks = cards.map((card) => card.rank ?? 5);
   const rankTotal = knownRanks.reduce((sum, rank) => sum + rank, 0);
-  const colorBonus = cards.length > 1 && cards.every((card) => card.color && card.color === cards[0].color) ? cpuWeight("sameColorPartial") : 0;
-  const sortedRanks = [...knownRanks].sort((a, b) => a - b);
-  const nearRunBonus = sortedRanks.every((rank, index) => index === 0 || rank - sortedRanks[index - 1] <= 2) ? cpuWeight("nearRunPartial") : 0;
+  const shapeBonus = cpuPartialShapeScore(cards);
   const waitBonus = cpuWaitPotentialScore(playerIndex, bannerIndex, cards);
-  if (cards.length < size - 1) return rankTotal * cpuWeight("rankTotal") + colorBonus + nearRunBonus + waitBonus;
+  if (cards.length < size - 1) return rankTotal * cpuWeight("rankTotal") + shapeBonus + waitBonus;
   const possible = bestPossibleFormation(cards, cpuAvailableTroopsForWait(), bannerIndex);
   if (!possible) return cards.reduce((sum, card) => sum + (card.rank ?? 5), 0) + waitBonus;
   return possible.type * cpuWeight("possibleFormationType") + possible.total * cpuWeight("total") + possible.high * cpuWeight("high") + waitBonus;
 }
 
+function cpuPartialShapeScore(cards) {
+  if (cards.length < 2) return 0;
+  const troopCards = cards.filter((card) => Number.isFinite(card.rank));
+  if (troopCards.length < 2) return cpuWeight("royalRunPartial") * 0.7;
+  const sortedRanks = troopCards.map((card) => card.rank).sort((a, b) => a - b);
+  const sameColor = troopCards.every((card) => card.color && card.color === troopCards[0].color);
+  const sameRank = troopCards.every((card) => card.rank === troopCards[0].rank);
+  const nearRun = sortedRanks.every((rank, index) => index === 0 || rank - sortedRanks[index - 1] <= 2);
+  let score = 0;
+  if (sameColor && nearRun) score += cpuWeight("royalRunPartial");
+  else if (nearRun) score += cpuWeight("nearRunPartial");
+  if (sameRank) score += cpuWeight("sameRankPartial");
+  if (sameColor && !nearRun) score += cpuWeight("sameColorPartial") * 0.35;
+  return score;
+}
+
 function cpuWaitPotentialScore(playerIndex, bannerIndex, cards) {
   if (claimOwner(bannerIndex) !== null) return 0;
   const needed = bannerSize(bannerIndex) - cards.length;
+  if (cpuSearchTimedOut()) return 0;
   if (needed <= 0 || needed > 2 || cards.length === 0) return 0;
   if (cards.some((card) => card.type === "tactic")) {
     const speed = needed === 1 ? 1 : 0.45;
@@ -1630,16 +1711,26 @@ function cpuWaitPotentialScore(playerIndex, bannerIndex, cards) {
     const result = formation(candidate, bannerIndex);
     if (!result) continue;
     const beatsOpponent = cpuWaitBeatsOpponent(playerIndex, bannerIndex, result);
-    const formationScore = result.type * cpuWeight("waitFormationType") + result.total * cpuWeight("total") + result.high * cpuWeight("high");
+    const formationScore = result.type * cpuWeight("waitFormationType")
+      + result.total * cpuWeight("total")
+      + result.high * cpuWeight("high")
+      + cpuWaitFormationAmbition(result);
     const score = formationScore + (beatsOpponent ? cpuWeight("winningWait") : 0);
     if (score > best) best = score;
-    if (beatsOpponent || result.type >= 2) liveOuts += 1;
+    if (beatsOpponent || result.type >= 3) liveOuts += result.type >= 3 ? 1.4 : 0.5;
   }
   if (best <= 0) return 0;
   const waitSpeed = needed === 1 ? 1 : 0.42;
   const liveBonus = Math.min(liveOuts, 12) * cpuWeight("liveOutValue");
   const density = Math.min(1, liveOuts / Math.max(1, available.length));
   return (best + liveBonus) * waitSpeed * (0.35 + density);
+}
+
+function cpuWaitFormationAmbition(result) {
+  if (result.type === 4) return cpuWeight("royalRunWaitBonus");
+  if (result.type === 3) return cpuWeight("tripleWaitBonus");
+  if (result.type === 2) return -cpuWeight("colorGuardTax");
+  return 0;
 }
 
 function cpuAvailableTroopsForWait() {
@@ -1671,10 +1762,11 @@ function cpuRelevantWaitCards(cards, available, needed) {
 }
 
 function cpuWaitCardRelevance(cards, card) {
-  const sameColor = cards.some((item) => item.color === card.color) ? 8 : 0;
-  const sameRank = cards.some((item) => item.rank === card.rank) ? 7 : 0;
-  const nearRun = cards.some((item) => Math.abs(item.rank - card.rank) <= 2) ? 5 : 0;
-  return sameColor + sameRank + nearRun + card.rank * 0.2;
+  const sameColor = cards.some((item) => item.color === card.color) ? 3 : 0;
+  const sameRank = cards.some((item) => item.rank === card.rank) ? 14 : 0;
+  const nearRun = cards.some((item) => Math.abs(item.rank - card.rank) <= 2) ? 8 : 0;
+  const royalRun = cards.some((item) => item.color === card.color && Math.abs(item.rank - card.rank) <= 2) ? 18 : 0;
+  return sameColor + sameRank + nearRun + royalRun + card.rank * 0.2;
 }
 
 function cpuWaitBeatsOpponent(playerIndex, bannerIndex, result) {

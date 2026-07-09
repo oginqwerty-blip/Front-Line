@@ -14,8 +14,10 @@
   "total": 0.1,
   "high": 0.1,
   "rankTotal": 0.822,
-  "sameColorPartial": 25.318,
-  "nearRunPartial": 17.21,
+  "sameColorPartial": 10.5,
+  "sameRankPartial": 46,
+  "nearRunPartial": 22,
+  "royalRunPartial": 62,
   "twoInLine": 48.269,
   "oneInLine": 9.587,
   "scoutValue": 35.323,
@@ -24,8 +26,11 @@
   "redeployValue": 28.864,
   "commandTempo": 15.398,
   "opponentReplyPenalty": 2.493,
-  "waitFormationType": 26.39,
-  "winningWait": 70.784,
+  "waitFormationType": 28,
+  "winningWait": 74,
   "liveOutValue": 10.603,
-  "positionClaim": 296.569
+  "positionClaim": 296.569,
+  "royalRunWaitBonus": 92,
+  "tripleWaitBonus": 68,
+  "colorGuardTax": 38
 }

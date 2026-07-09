@@ -33,7 +33,9 @@ const WEIGHT_KEYS = [
   "high",
   "rankTotal",
   "sameColorPartial",
+  "sameRankPartial",
   "nearRunPartial",
+  "royalRunPartial",
   "twoInLine",
   "oneInLine",
   "scoutValue",
@@ -46,6 +48,9 @@ const WEIGHT_KEYS = [
   "winningWait",
   "liveOutValue",
   "positionClaim",
+  "royalRunWaitBonus",
+  "tripleWaitBonus",
+  "colorGuardTax",
 ];
 
 const TRAIN_SEARCH_DEPTH = 3;
@@ -497,15 +502,28 @@ function formationValue(cards, state, banner, w, player = state.active) {
   if (complete) return complete.type * w.completeFormationType + complete.total * w.total + complete.high * w.high;
   const ranks = cards.map((card) => card.rank ?? 5);
   const rankTotal = ranks.reduce((sum, rank) => sum + rank, 0) * w.rankTotal;
-  const sameColor = cards.length > 1 && cards.every((card) => card.color && card.color === cards[0].color) ? w.sameColorPartial : 0;
-  const sorted = [...ranks].sort((a, b) => a - b);
-  const nearRun = sorted.every((rank, index) => index === 0 || rank - sorted[index - 1] <= 2) ? w.nearRunPartial : 0;
-  return rankTotal + sameColor + nearRun + waitPotentialScore(state, player, banner, cards, w);
+  return rankTotal + partialShapeScore(cards, w) + waitPotentialScore(state, player, banner, cards, w);
 }
 
 function boardCardThreat(state, player, banner, card, w) {
   const row = state.players[player].rows[banner];
   return (card.rank ?? 5) * w.high + formationValue(row, state, banner, w, player) / Math.max(1, row.length) + row.length * w.threatPerCard;
+}
+
+function partialShapeScore(cards, w) {
+  if (cards.length < 2) return 0;
+  const troopCards = cards.filter((card) => Number.isFinite(card.rank));
+  if (troopCards.length < 2) return w.royalRunPartial * 0.7;
+  const sorted = troopCards.map((card) => card.rank).sort((a, b) => a - b);
+  const sameColor = troopCards.every((card) => card.color && card.color === troopCards[0].color);
+  const sameRank = troopCards.every((card) => card.rank === troopCards[0].rank);
+  const nearRun = sorted.every((rank, index) => index === 0 || rank - sorted[index - 1] <= 2);
+  let score = 0;
+  if (sameColor && nearRun) score += w.royalRunPartial;
+  else if (nearRun) score += w.nearRunPartial;
+  if (sameRank) score += w.sameRankPartial;
+  if (sameColor && !nearRun) score += w.sameColorPartial * 0.35;
+  return score;
 }
 
 function waitPotentialScore(state, player, banner, cards, w) {
@@ -525,16 +543,23 @@ function waitPotentialScore(state, player, banner, cards, w) {
     const result = formation([...cards, ...combo], state, banner);
     if (!result) continue;
     const beatsOpponent = waitBeatsOpponent(state, player, banner, result);
-    const formationScore = result.type * w.waitFormationType + result.total * w.total + result.high * w.high;
+    const formationScore = result.type * w.waitFormationType + result.total * w.total + result.high * w.high + waitFormationAmbition(result, w);
     const score = formationScore + (beatsOpponent ? w.winningWait : 0);
     if (score > best) best = score;
-    if (beatsOpponent || result.type >= 2) liveOuts += 1;
+    if (beatsOpponent || result.type >= 3) liveOuts += result.type >= 3 ? 1.4 : 0.5;
   }
   if (best <= 0) return 0;
   const waitSpeed = needed === 1 ? 1 : 0.42;
   const liveBonus = Math.min(liveOuts, 12) * w.liveOutValue;
   const density = Math.min(1, liveOuts / Math.max(1, available.length));
   return (best + liveBonus) * waitSpeed * (0.35 + density);
+}
+
+function waitFormationAmbition(result, w) {
+  if (result.type === 4) return w.royalRunWaitBonus;
+  if (result.type === 3) return w.tripleWaitBonus;
+  if (result.type === 2) return -w.colorGuardTax;
+  return 0;
 }
 
 function availableTroopsForWait(state) {
@@ -563,10 +588,11 @@ function relevantWaitCards(cards, available, needed) {
 }
 
 function waitCardRelevance(cards, card) {
-  const sameColor = cards.some((item) => item.color === card.color) ? 8 : 0;
-  const sameRank = cards.some((item) => item.rank === card.rank) ? 7 : 0;
-  const nearRun = cards.some((item) => Math.abs(item.rank - card.rank) <= 2) ? 5 : 0;
-  return sameColor + sameRank + nearRun + card.rank * 0.2;
+  const sameColor = cards.some((item) => item.color === card.color) ? 3 : 0;
+  const sameRank = cards.some((item) => item.rank === card.rank) ? 14 : 0;
+  const nearRun = cards.some((item) => Math.abs(item.rank - card.rank) <= 2) ? 8 : 0;
+  const royalRun = cards.some((item) => item.color === card.color && Math.abs(item.rank - card.rank) <= 2) ? 18 : 0;
+  return sameColor + sameRank + nearRun + royalRun + card.rank * 0.2;
 }
 
 function waitBeatsOpponent(state, player, banner, result) {
