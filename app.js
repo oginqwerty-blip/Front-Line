@@ -53,6 +53,7 @@ const CPU_DEFAULT_WEIGHTS = {
   turnoverValue: 66,
   redeployValue: 42,
   commandTempo: 18,
+  opponentReplyPenalty: 0.65,
 };
 
 let cpuWeights = { ...CPU_DEFAULT_WEIGHTS };
@@ -1260,22 +1261,144 @@ function cpuClaimAvailable() {
   return claimed;
 }
 
-function chooseCpuMove() {
-  const player = activePlayer();
+function chooseCpuMove({ includeLookahead = true } = {}) {
+  const moves = cpuCandidateMoves();
   let best = null;
+  for (const move of moves) {
+    const scored = includeLookahead ? cpuScoreWithLookahead(move) : { ...move, baseScore: move.score };
+    if (!best || scored.score > best.score) best = scored;
+  }
+  return best;
+}
+
+function cpuCandidateMoves() {
+  const player = activePlayer();
+  const moves = [];
   player.hand.forEach((card) => {
     if (card.type === "tactic" && card.kind === "command") {
       const command = chooseCpuCommandMove(card);
-      if (command && (!best || command.score > best.score)) best = command;
+      if (command) moves.push(command);
       return;
     }
     for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
       if (!cpuCanPlayCard(card, bannerIndex)) continue;
       const score = cpuMoveScore(card, bannerIndex);
-      if (!best || score > best.score) best = { type: "place", card, bannerIndex, score };
+      moves.push({ type: "place", card, bannerIndex, score });
     }
   });
-  return best;
+  return moves;
+}
+
+function cpuScoreWithLookahead(move) {
+  const baseScore = move.score;
+  const replyScore = cpuBestOpponentReplyScore(move);
+  return {
+    ...move,
+    baseScore,
+    replyScore,
+    score: baseScore - replyScore * cpuWeight("opponentReplyPenalty"),
+  };
+}
+
+function cpuBestOpponentReplyScore(move) {
+  const snapshot = JSON.stringify(state);
+  const movingPlayer = state.active;
+  let replyScore = 0;
+  try {
+    if (!cpuApplyMoveForLookahead(move)) return 0;
+    cpuClaimAllForLookahead(movingPlayer);
+    state.active = 1 - movingPlayer;
+    cpuClaimAllForLookahead(state.active);
+    const reply = chooseCpuMove({ includeLookahead: false });
+    replyScore = Math.max(0, reply?.baseScore ?? reply?.score ?? 0);
+  } finally {
+    Object.assign(state, JSON.parse(snapshot));
+  }
+  return replyScore;
+}
+
+function cpuApplyMoveForLookahead(move) {
+  const movingPlayer = state.active;
+  const player = state.players[movingPlayer];
+  const cardIndex = player.hand.findIndex((card) => card.id === move.card.id);
+  if (cardIndex === -1) return false;
+  const [card] = player.hand.splice(cardIndex, 1);
+  let shouldDraw = true;
+  if (card.type === "tactic") cpuCommitTacticForLookahead(movingPlayer, card);
+
+  if (move.type === "place") {
+    if (card.kind === "environment") {
+      state.bannerEffects[move.bannerIndex][card.effect] = true;
+      state.players.forEach((targetPlayer) => {
+        if (targetPlayer.rows[move.bannerIndex].length < bannerSize(move.bannerIndex)) {
+          targetPlayer.completedAt[move.bannerIndex] = null;
+        }
+      });
+    } else {
+      player.rows[move.bannerIndex].push(card);
+      markCompletedIfFull(movingPlayer, move.bannerIndex);
+    }
+  } else if (move.type === "scout") {
+    shouldDraw = false;
+    const drawn = [];
+    for (let i = 0; i < 3; i += 1) {
+      const drawnCard = cpuDrawBestCardForLookahead(movingPlayer);
+      if (drawnCard) drawn.push(drawnCard);
+    }
+    const returned = [...drawn]
+      .sort((a, b) => cpuScoutKeepScore(a) - cpuScoutKeepScore(b))
+      .slice(0, 2);
+    returned.forEach((returnedCard) => {
+      const index = player.hand.findIndex((item) => item.id === returnedCard.id);
+      if (index !== -1) player.hand.splice(index, 1);
+    });
+    placeScoutReturnedCardsOnDecks(returned);
+  } else if (move.type === "rout") {
+    const row = state.players[move.targetPlayer].rows[move.bannerIndex];
+    row.splice(move.cardIndex, 1);
+    state.players[move.targetPlayer].completedAt[move.bannerIndex] = null;
+  } else if (move.type === "turnover") {
+    const sourceRow = state.players[move.targetPlayer].rows[move.sourceBanner];
+    const [flipped] = sourceRow.splice(move.cardIndex, 1);
+    state.players[move.targetPlayer].completedAt[move.sourceBanner] = null;
+    state.players[movingPlayer].rows[move.destinationBanner].push(flipped);
+    markCompletedIfFull(movingPlayer, move.destinationBanner);
+  } else if (move.type === "redeploy") {
+    const sourceRow = state.players[movingPlayer].rows[move.sourceBanner];
+    const [moved] = sourceRow.splice(move.cardIndex, 1);
+    state.players[movingPlayer].completedAt[move.sourceBanner] = null;
+    state.players[movingPlayer].rows[move.destinationBanner].push(moved);
+    markCompletedIfFull(movingPlayer, move.destinationBanner);
+  }
+
+  if (shouldDraw) cpuDrawBestCardForLookahead(movingPlayer);
+  state.selectedCardId = null;
+  state.pendingCommand = null;
+  state.hasPlayedThisTurn = false;
+  state.mustDraw = false;
+  return true;
+}
+
+function cpuCommitTacticForLookahead(playerIndex, card) {
+  const player = state.players[playerIndex];
+  player.tacticsPlayed += 1;
+  if (card.wild === "leader") player.leaderPlayed = true;
+}
+
+function cpuDrawBestCardForLookahead(playerIndex) {
+  const player = state.players[playerIndex];
+  const tacticCards = player.hand.filter((card) => card.type === "tactic").length;
+  const canDrawTactic = state.tacticDeck.length > 0
+    && tacticCards < 2
+    && player.tacticsPlayed <= state.players[1 - playerIndex].tacticsPlayed;
+  if (canDrawTactic || (state.deck.length === 0 && state.tacticDeck.length > 0)) return drawTacticTo(playerIndex);
+  return drawTo(playerIndex);
+}
+
+function cpuClaimAllForLookahead(playerIndex) {
+  for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
+    if (canClaim(playerIndex, bannerIndex)) state.players[playerIndex].claimed.push(bannerIndex);
+  }
 }
 
 function cpuCanPlayCard(card, bannerIndex) {

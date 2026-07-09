@@ -41,6 +41,7 @@ const WEIGHT_KEYS = [
   "turnoverValue",
   "redeployValue",
   "commandTempo",
+  "opponentReplyPenalty",
 ];
 
 function args() {
@@ -69,6 +70,7 @@ function randomNormal(rand) {
 }
 
 function clampWeight(key, value) {
+  if (key === "opponentReplyPenalty") return Math.max(0, Math.min(2.5, value));
   if (key.endsWith("Penalty")) return Math.max(-240, Math.min(0, value));
   if (["center", "total", "high", "rankTotal"].includes(key)) return Math.max(0.1, Math.min(10, value));
   return Math.max(0, Math.min(320, value));
@@ -264,17 +266,48 @@ function winner(state) {
   return null;
 }
 
-function chooseAction(state, player, weights) {
+function chooseAction(state, player, weights, opponentWeights = weights, includeLookahead = true) {
+  const actions = actionCandidates(state, player, weights);
   let best = null;
-  for (const card of state.players[player].hand) {
-    const actions = card.type === "tactic" && card.kind === "command"
-      ? commandActions(state, player, card, weights)
-      : placeActions(state, player, card, weights);
-    for (const action of actions) {
-      if (!best || action.score > best.score) best = action;
-    }
+  for (const action of actions) {
+    const scored = includeLookahead
+      ? scoreWithLookahead(state, player, action, weights, opponentWeights)
+      : { ...action, baseScore: action.score };
+    if (!best || scored.score > best.score) best = scored;
   }
   return best;
+}
+
+function actionCandidates(state, player, weights) {
+  const actions = [];
+  for (const card of state.players[player].hand) {
+    const cardActions = card.type === "tactic" && card.kind === "command"
+      ? commandActions(state, player, card, weights)
+      : placeActions(state, player, card, weights);
+    actions.push(...cardActions);
+  }
+  return actions;
+}
+
+function scoreWithLookahead(state, player, action, weights, opponentWeights) {
+  const replyScore = bestOpponentReplyScore(state, player, action, weights, opponentWeights);
+  const penalty = Number.isFinite(weights.opponentReplyPenalty) ? weights.opponentReplyPenalty : 0.65;
+  return {
+    ...action,
+    baseScore: action.score,
+    replyScore,
+    score: action.score - replyScore * penalty,
+  };
+}
+
+function bestOpponentReplyScore(state, player, action, weights, opponentWeights) {
+  const next = JSON.parse(JSON.stringify(state));
+  playAction(next, player, action, weights);
+  claimAll(next);
+  const opponent = 1 - player;
+  next.active = opponent;
+  const reply = chooseAction(next, opponent, opponentWeights, weights, false);
+  return Math.max(0, reply?.baseScore ?? reply?.score ?? 0);
 }
 
 function placeActions(state, player, card, w) {
@@ -497,7 +530,7 @@ function playGame(weightsByPlayer, seed) {
     const won = winner(state);
     if (won !== null) return won;
     const player = state.active;
-    const action = chooseAction(state, player, weightsByPlayer[player]);
+    const action = chooseAction(state, player, weightsByPlayer[player], weightsByPlayer[1 - player]);
     if (action) playAction(state, player, action, weightsByPlayer[player]);
     claimAll(state);
     const afterMoveWinner = winner(state);
