@@ -54,7 +54,15 @@ const CPU_DEFAULT_WEIGHTS = {
   redeployValue: 42,
   commandTempo: 18,
   opponentReplyPenalty: 0.65,
+  waitFormationType: 36,
+  winningWait: 80,
+  liveOutValue: 9,
+  positionClaim: 260,
 };
+
+const CPU_LOOKAHEAD_DEPTH = 3;
+const CPU_ROOT_BRANCH_LIMIT = 7;
+const CPU_REPLY_BRANCH_LIMIT = 4;
 
 let cpuWeights = { ...CPU_DEFAULT_WEIGHTS };
 
@@ -1261,14 +1269,19 @@ function cpuClaimAvailable() {
   return claimed;
 }
 
-function chooseCpuMove({ includeLookahead = true } = {}) {
-  const moves = cpuCandidateMoves();
+function chooseCpuMove({ includeLookahead = true, depth = CPU_LOOKAHEAD_DEPTH } = {}) {
+  const moves = cpuRankedCandidateMoves(includeLookahead ? CPU_ROOT_BRANCH_LIMIT : Number.POSITIVE_INFINITY);
   let best = null;
   for (const move of moves) {
-    const scored = includeLookahead ? cpuScoreWithLookahead(move) : { ...move, baseScore: move.score };
+    const scored = includeLookahead ? cpuScoreWithSearch(move, depth) : { ...move, baseScore: move.score };
     if (!best || scored.score > best.score) best = scored;
   }
   return best;
+}
+
+function cpuRankedCandidateMoves(limit = CPU_REPLY_BRANCH_LIMIT) {
+  const moves = cpuCandidateMoves().sort((a, b) => b.score - a.score);
+  return Number.isFinite(limit) ? moves.slice(0, limit) : moves;
 }
 
 function cpuCandidateMoves() {
@@ -1289,32 +1302,64 @@ function cpuCandidateMoves() {
   return moves;
 }
 
-function cpuScoreWithLookahead(move) {
+function cpuScoreWithSearch(move, depth) {
   const baseScore = move.score;
-  const replyScore = cpuBestOpponentReplyScore(move);
+  const searchScore = cpuSearchAfterMove(move, depth);
   return {
     ...move,
     baseScore,
-    replyScore,
-    score: baseScore - replyScore * cpuWeight("opponentReplyPenalty"),
+    searchScore,
+    score: searchScore,
   };
 }
 
-function cpuBestOpponentReplyScore(move) {
+function cpuSearchAfterMove(move, depth) {
   const snapshot = JSON.stringify(state);
-  const movingPlayer = state.active;
-  let replyScore = 0;
+  const rootPlayer = state.active;
+  let score = move.score;
   try {
-    if (!cpuApplyMoveForLookahead(move)) return 0;
-    cpuClaimAllForLookahead(movingPlayer);
-    state.active = 1 - movingPlayer;
-    cpuClaimAllForLookahead(state.active);
-    const reply = chooseCpuMove({ includeLookahead: false });
-    replyScore = Math.max(0, reply?.baseScore ?? reply?.score ?? 0);
+    if (!cpuApplyMoveForLookahead(move)) return score;
+    cpuClaimAllForLookahead(rootPlayer);
+    state.active = 1 - rootPlayer;
+    score = cpuMinimax(rootPlayer, depth - 1, -Infinity, Infinity);
   } finally {
     Object.assign(state, JSON.parse(snapshot));
   }
-  return replyScore;
+  return score;
+}
+
+function cpuMinimax(rootPlayer, depth, alpha, beta) {
+  cpuClaimAllForLookahead(state.active);
+  const winner = winnerIndex();
+  if (winner !== null) return winner === rootPlayer ? 100000 : -100000;
+  if (depth <= 0) return cpuEvaluatePosition(rootPlayer);
+
+  const maximizing = state.active === rootPlayer;
+  const moves = cpuRankedCandidateMoves(CPU_REPLY_BRANCH_LIMIT);
+  if (moves.length === 0) {
+    const previousActive = state.active;
+    state.active = 1 - state.active;
+    const passedScore = cpuMinimax(rootPlayer, depth - 1, alpha, beta);
+    state.active = previousActive;
+    return passedScore;
+  }
+
+  let best = maximizing ? -Infinity : Infinity;
+  for (const move of moves) {
+    const snapshot = JSON.stringify(state);
+    const movingPlayer = state.active;
+    if (cpuApplyMoveForLookahead(move)) {
+      cpuClaimAllForLookahead(movingPlayer);
+      state.active = 1 - movingPlayer;
+      const score = cpuMinimax(rootPlayer, depth - 1, alpha, beta);
+      best = maximizing ? Math.max(best, score) : Math.min(best, score);
+      if (maximizing) alpha = Math.max(alpha, best);
+      else beta = Math.min(beta, best);
+    }
+    Object.assign(state, JSON.parse(snapshot));
+    if (beta <= alpha) break;
+  }
+  return best;
 }
 
 function cpuApplyMoveForLookahead(move) {
@@ -1504,15 +1549,53 @@ function cpuMoveScore(card, bannerIndex) {
   return formationScore + progressScore + threatScore + claimLineScore + centerBonus + ownerPenalty;
 }
 
+function cpuEvaluatePosition(rootPlayer) {
+  const opponent = 1 - rootPlayer;
+  let score = (state.players[rootPlayer].claimed.length - state.players[opponent].claimed.length) * cpuWeight("positionClaim");
+  score += cpuClaimedLineScore(rootPlayer) - cpuClaimedLineScore(opponent);
+  for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
+    const owner = claimOwner(bannerIndex);
+    if (owner === rootPlayer) {
+      score += cpuWeight("positionClaim") * 0.55;
+      continue;
+    }
+    if (owner === opponent) {
+      score -= cpuWeight("positionClaim") * 0.65;
+      continue;
+    }
+    score += cpuRowPositionScore(rootPlayer, bannerIndex);
+    score -= cpuRowPositionScore(opponent, bannerIndex) * 0.95;
+  }
+  return score;
+}
+
+function cpuRowPositionScore(playerIndex, bannerIndex) {
+  const row = state.players[playerIndex].rows[bannerIndex];
+  if (row.length === 0) return 0;
+  const progress = row.length * cpuWeight("progress");
+  const completion = row.length === bannerSize(bannerIndex) ? cpuWeight("completeBonus") : 0;
+  return cpuFormationValue(row, bannerIndex, playerIndex) + progress + completion + cpuLinePressureScoreForPlayer(playerIndex, bannerIndex);
+}
+
+function cpuClaimedLineScore(playerIndex) {
+  const claimed = new Set(state.players[playerIndex].claimed);
+  let score = 0;
+  for (let bannerIndex = 0; bannerIndex < 9; bannerIndex += 1) {
+    if (!claimed.has(bannerIndex)) continue;
+    score += cpuLinePressureScoreForPlayer(playerIndex, bannerIndex);
+  }
+  return score;
+}
+
 function cpuBoardCardThreat(playerIndex, bannerIndex, card) {
   const row = state.players[playerIndex].rows[bannerIndex];
   const value = (card.rank ?? 5) * cpuWeight("high");
-  const formationValue = cpuFormationValue(row, bannerIndex);
+  const formationValue = cpuFormationValue(row, bannerIndex, playerIndex);
   const nearComplete = row.length >= bannerSize(bannerIndex) - 1 ? cpuWeight("immediateThreat") : row.length * cpuWeight("threatPerCard");
   return value + formationValue / Math.max(1, row.length) + nearComplete;
 }
 
-function cpuFormationValue(cards, bannerIndex) {
+function cpuFormationValue(cards, bannerIndex, playerIndex = state.active) {
   const complete = formation(cards, bannerIndex);
   if (complete) return complete.type * cpuWeight("completeFormationType") + complete.total * cpuWeight("total") + complete.high * cpuWeight("high");
   const size = bannerSize(bannerIndex);
@@ -1521,14 +1604,97 @@ function cpuFormationValue(cards, bannerIndex) {
   const colorBonus = cards.length > 1 && cards.every((card) => card.color && card.color === cards[0].color) ? cpuWeight("sameColorPartial") : 0;
   const sortedRanks = [...knownRanks].sort((a, b) => a - b);
   const nearRunBonus = sortedRanks.every((rank, index) => index === 0 || rank - sortedRanks[index - 1] <= 2) ? cpuWeight("nearRunPartial") : 0;
-  if (cards.length < size - 1) return rankTotal * cpuWeight("rankTotal") + colorBonus + nearRunBonus;
-  const possible = bestPossibleFormation(cards, availableForProof(bannerIndex), bannerIndex);
-  if (!possible) return cards.reduce((sum, card) => sum + (card.rank ?? 5), 0);
-  return possible.type * cpuWeight("possibleFormationType") + possible.total * cpuWeight("total") + possible.high * cpuWeight("high");
+  const waitBonus = cpuWaitPotentialScore(playerIndex, bannerIndex, cards);
+  if (cards.length < size - 1) return rankTotal * cpuWeight("rankTotal") + colorBonus + nearRunBonus + waitBonus;
+  const possible = bestPossibleFormation(cards, cpuAvailableTroopsForWait(), bannerIndex);
+  if (!possible) return cards.reduce((sum, card) => sum + (card.rank ?? 5), 0) + waitBonus;
+  return possible.type * cpuWeight("possibleFormationType") + possible.total * cpuWeight("total") + possible.high * cpuWeight("high") + waitBonus;
+}
+
+function cpuWaitPotentialScore(playerIndex, bannerIndex, cards) {
+  if (claimOwner(bannerIndex) !== null) return 0;
+  const needed = bannerSize(bannerIndex) - cards.length;
+  if (needed <= 0 || needed > 2 || cards.length === 0) return 0;
+  if (cards.some((card) => card.type === "tactic")) {
+    const speed = needed === 1 ? 1 : 0.45;
+    return (cpuWeight("winningWait") * 0.75 + cpuWeight("waitFormationType") * cards.length) * speed;
+  }
+  const available = cpuRelevantWaitCards(cards, cpuAvailableTroopsForWait(), needed);
+  if (available.length < needed) return 0;
+
+  let best = 0;
+  let liveOuts = 0;
+  const combos = combinations(available, needed);
+  for (const combo of combos) {
+    const candidate = [...cards, ...combo];
+    const result = formation(candidate, bannerIndex);
+    if (!result) continue;
+    const beatsOpponent = cpuWaitBeatsOpponent(playerIndex, bannerIndex, result);
+    const formationScore = result.type * cpuWeight("waitFormationType") + result.total * cpuWeight("total") + result.high * cpuWeight("high");
+    const score = formationScore + (beatsOpponent ? cpuWeight("winningWait") : 0);
+    if (score > best) best = score;
+    if (beatsOpponent || result.type >= 2) liveOuts += 1;
+  }
+  if (best <= 0) return 0;
+  const waitSpeed = needed === 1 ? 1 : 0.42;
+  const liveBonus = Math.min(liveOuts, 12) * cpuWeight("liveOutValue");
+  const density = Math.min(1, liveOuts / Math.max(1, available.length));
+  return (best + liveBonus) * waitSpeed * (0.35 + density);
+}
+
+function cpuAvailableTroopsForWait() {
+  const unavailable = new Set();
+  state.players.forEach((player) => {
+    player.rows.flat().forEach((card) => {
+      if (card.type === "troop") unavailable.add(card.id);
+    });
+  });
+  state.routedCards.forEach((entry) => {
+    if (entry.card?.type === "troop") unavailable.add(entry.card.id);
+  });
+  return buildDeck().filter((card) => !unavailable.has(card.id));
+}
+
+function cpuRelevantWaitCards(cards, available, needed) {
+  const ranks = cards.map((card) => card.rank).filter(Number.isFinite);
+  const colors = new Set(cards.map((card) => card.color).filter(Boolean));
+  const relevant = available.filter((card) => {
+    if (cards.some((item) => item.id === card.id)) return false;
+    if (colors.has(card.color)) return true;
+    if (ranks.includes(card.rank)) return true;
+    if (ranks.some((rank) => Math.abs(rank - card.rank) <= 2)) return true;
+    return card.rank >= 8;
+  });
+  return relevant
+    .sort((a, b) => cpuWaitCardRelevance(cards, b) - cpuWaitCardRelevance(cards, a))
+    .slice(0, needed === 1 ? 18 : 9);
+}
+
+function cpuWaitCardRelevance(cards, card) {
+  const sameColor = cards.some((item) => item.color === card.color) ? 8 : 0;
+  const sameRank = cards.some((item) => item.rank === card.rank) ? 7 : 0;
+  const nearRun = cards.some((item) => Math.abs(item.rank - card.rank) <= 2) ? 5 : 0;
+  return sameColor + sameRank + nearRun + card.rank * 0.2;
+}
+
+function cpuWaitBeatsOpponent(playerIndex, bannerIndex, result) {
+  const opponent = 1 - playerIndex;
+  const opponentCards = state.players[opponent].rows[bannerIndex];
+  if (opponentCards.length === 0) return true;
+  if (opponentCards.length === bannerSize(bannerIndex)) {
+    return compareFormationValues(result, formation(opponentCards, bannerIndex)) >= 0;
+  }
+  if (opponentCards.length < bannerSize(bannerIndex) - 1) return result.type >= 2;
+  const opponentBest = bestPossibleFormation(opponentCards, cpuAvailableTroopsForWait(), bannerIndex);
+  return opponentBest ? compareFormationValues(result, opponentBest) >= 0 : true;
 }
 
 function cpuLinePressureScore(bannerIndex) {
-  const claimed = new Set(state.players[state.active].claimed);
+  return cpuLinePressureScoreForPlayer(state.active, bannerIndex);
+}
+
+function cpuLinePressureScoreForPlayer(playerIndex, bannerIndex) {
+  const claimed = new Set(state.players[playerIndex].claimed);
   let score = 0;
   for (const offset of [-2, -1, 0]) {
     const line = [offset, offset + 1, offset + 2].map((step) => bannerIndex + step);

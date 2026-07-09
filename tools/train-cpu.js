@@ -42,7 +42,15 @@ const WEIGHT_KEYS = [
   "redeployValue",
   "commandTempo",
   "opponentReplyPenalty",
+  "waitFormationType",
+  "winningWait",
+  "liveOutValue",
+  "positionClaim",
 ];
+
+const TRAIN_SEARCH_DEPTH = 3;
+const TRAIN_ROOT_BRANCH_LIMIT = 5;
+const TRAIN_REPLY_BRANCH_LIMIT = 3;
 
 function args() {
   const out = { generations: 12, games: 160, candidates: 8, seed: Date.now(), write: false };
@@ -267,15 +275,20 @@ function winner(state) {
 }
 
 function chooseAction(state, player, weights, opponentWeights = weights, includeLookahead = true) {
-  const actions = actionCandidates(state, player, weights);
+  const actions = rankedActions(state, player, weights, includeLookahead ? TRAIN_ROOT_BRANCH_LIMIT : Number.POSITIVE_INFINITY);
   let best = null;
   for (const action of actions) {
     const scored = includeLookahead
-      ? scoreWithLookahead(state, player, action, weights, opponentWeights)
+      ? scoreWithSearch(state, player, action, weights, opponentWeights)
       : { ...action, baseScore: action.score };
     if (!best || scored.score > best.score) best = scored;
   }
   return best;
+}
+
+function rankedActions(state, player, weights, limit = TRAIN_REPLY_BRANCH_LIMIT) {
+  const actions = actionCandidates(state, player, weights).sort((a, b) => b.score - a.score);
+  return Number.isFinite(limit) ? actions.slice(0, limit) : actions;
 }
 
 function actionCandidates(state, player, weights) {
@@ -289,25 +302,56 @@ function actionCandidates(state, player, weights) {
   return actions;
 }
 
-function scoreWithLookahead(state, player, action, weights, opponentWeights) {
-  const replyScore = bestOpponentReplyScore(state, player, action, weights, opponentWeights);
-  const penalty = Number.isFinite(weights.opponentReplyPenalty) ? weights.opponentReplyPenalty : 0.65;
+function scoreWithSearch(state, player, action, weights, opponentWeights) {
+  const weightsByPlayer = [];
+  weightsByPlayer[player] = weights;
+  weightsByPlayer[1 - player] = opponentWeights;
+  const searchScore = searchAfterAction(state, player, action, weightsByPlayer, TRAIN_SEARCH_DEPTH);
   return {
     ...action,
     baseScore: action.score,
-    replyScore,
-    score: action.score - replyScore * penalty,
+    searchScore,
+    score: searchScore,
   };
 }
 
-function bestOpponentReplyScore(state, player, action, weights, opponentWeights) {
+function searchAfterAction(state, player, action, weightsByPlayer, depth) {
   const next = JSON.parse(JSON.stringify(state));
-  playAction(next, player, action, weights);
+  playAction(next, player, action, weightsByPlayer[player]);
   claimAll(next);
   const opponent = 1 - player;
   next.active = opponent;
-  const reply = chooseAction(next, opponent, opponentWeights, weights, false);
-  return Math.max(0, reply?.baseScore ?? reply?.score ?? 0);
+  return minimax(next, player, weightsByPlayer, depth - 1, -Infinity, Infinity);
+}
+
+function minimax(state, rootPlayer, weightsByPlayer, depth, alpha, beta) {
+  claimAll(state);
+  const won = winner(state);
+  if (won !== null) return won === rootPlayer ? 100000 : -100000;
+  if (depth <= 0) return evaluatePosition(state, rootPlayer, weightsByPlayer[rootPlayer]);
+
+  const player = state.active;
+  const maximizing = player === rootPlayer;
+  const actions = rankedActions(state, player, weightsByPlayer[player], TRAIN_REPLY_BRANCH_LIMIT);
+  if (actions.length === 0) {
+    const next = JSON.parse(JSON.stringify(state));
+    next.active = 1 - player;
+    return minimax(next, rootPlayer, weightsByPlayer, depth - 1, alpha, beta);
+  }
+
+  let best = maximizing ? -Infinity : Infinity;
+  for (const action of actions) {
+    const next = JSON.parse(JSON.stringify(state));
+    playAction(next, player, action, weightsByPlayer[player]);
+    claimAll(next);
+    next.active = 1 - player;
+    const score = minimax(next, rootPlayer, weightsByPlayer, depth - 1, alpha, beta);
+    best = maximizing ? Math.max(best, score) : Math.min(best, score);
+    if (maximizing) alpha = Math.max(alpha, best);
+    else beta = Math.min(beta, best);
+    if (beta <= alpha) break;
+  }
+  return best;
 }
 
 function placeActions(state, player, card, w) {
@@ -415,7 +459,40 @@ function moveScore(state, player, card, banner, w) {
   return score;
 }
 
-function formationValue(cards, state, banner, w) {
+function evaluatePosition(state, rootPlayer, w) {
+  const opponent = 1 - rootPlayer;
+  let score = (state.players[rootPlayer].claimed.length - state.players[opponent].claimed.length) * w.positionClaim;
+  score += claimedLineScore(state, rootPlayer, w) - claimedLineScore(state, opponent, w);
+  for (let banner = 0; banner < 9; banner += 1) {
+    const own = owner(state, banner);
+    if (own === rootPlayer) {
+      score += w.positionClaim * 0.55;
+      continue;
+    }
+    if (own === opponent) {
+      score -= w.positionClaim * 0.65;
+      continue;
+    }
+    score += rowPositionScore(state, rootPlayer, banner, w);
+    score -= rowPositionScore(state, opponent, banner, w) * 0.95;
+  }
+  return score;
+}
+
+function rowPositionScore(state, player, banner, w) {
+  const row = state.players[player].rows[banner];
+  if (row.length === 0) return 0;
+  return formationValue(row, state, banner, w, player)
+    + row.length * w.progress
+    + (row.length === bannerSize(state, banner) ? w.completeBonus : 0)
+    + linePressure(state, player, banner, w);
+}
+
+function claimedLineScore(state, player, w) {
+  return state.players[player].claimed.reduce((sum, banner) => sum + linePressure(state, player, banner, w), 0);
+}
+
+function formationValue(cards, state, banner, w, player = state.active) {
   const complete = formation(cards, state, banner);
   if (complete) return complete.type * w.completeFormationType + complete.total * w.total + complete.high * w.high;
   const ranks = cards.map((card) => card.rank ?? 5);
@@ -423,12 +500,106 @@ function formationValue(cards, state, banner, w) {
   const sameColor = cards.length > 1 && cards.every((card) => card.color && card.color === cards[0].color) ? w.sameColorPartial : 0;
   const sorted = [...ranks].sort((a, b) => a - b);
   const nearRun = sorted.every((rank, index) => index === 0 || rank - sorted[index - 1] <= 2) ? w.nearRunPartial : 0;
-  return rankTotal + sameColor + nearRun;
+  return rankTotal + sameColor + nearRun + waitPotentialScore(state, player, banner, cards, w);
 }
 
 function boardCardThreat(state, player, banner, card, w) {
   const row = state.players[player].rows[banner];
-  return (card.rank ?? 5) * w.high + formationValue(row, state, banner, w) / Math.max(1, row.length) + row.length * w.threatPerCard;
+  return (card.rank ?? 5) * w.high + formationValue(row, state, banner, w, player) / Math.max(1, row.length) + row.length * w.threatPerCard;
+}
+
+function waitPotentialScore(state, player, banner, cards, w) {
+  if (owner(state, banner) !== null) return 0;
+  const needed = bannerSize(state, banner) - cards.length;
+  if (needed <= 0 || needed > 2 || cards.length === 0) return 0;
+  if (cards.some((card) => card.type === "tactic")) {
+    const speed = needed === 1 ? 1 : 0.45;
+    return (w.winningWait * 0.75 + w.waitFormationType * cards.length) * speed;
+  }
+  const available = relevantWaitCards(cards, availableTroopsForWait(state), needed);
+  if (available.length < needed) return 0;
+
+  let best = 0;
+  let liveOuts = 0;
+  for (const combo of combinations(available, needed)) {
+    const result = formation([...cards, ...combo], state, banner);
+    if (!result) continue;
+    const beatsOpponent = waitBeatsOpponent(state, player, banner, result);
+    const formationScore = result.type * w.waitFormationType + result.total * w.total + result.high * w.high;
+    const score = formationScore + (beatsOpponent ? w.winningWait : 0);
+    if (score > best) best = score;
+    if (beatsOpponent || result.type >= 2) liveOuts += 1;
+  }
+  if (best <= 0) return 0;
+  const waitSpeed = needed === 1 ? 1 : 0.42;
+  const liveBonus = Math.min(liveOuts, 12) * w.liveOutValue;
+  const density = Math.min(1, liveOuts / Math.max(1, available.length));
+  return (best + liveBonus) * waitSpeed * (0.35 + density);
+}
+
+function availableTroopsForWait(state) {
+  const unavailable = new Set();
+  state.players.forEach((player) => {
+    player.rows.flat().forEach((card) => {
+      if (card.type === "troop") unavailable.add(card.id);
+    });
+  });
+  return buildDeck().filter((card) => !unavailable.has(card.id));
+}
+
+function relevantWaitCards(cards, available, needed) {
+  const ranks = cards.map((card) => card.rank).filter(Number.isFinite);
+  const colors = new Set(cards.map((card) => card.color).filter(Boolean));
+  return available
+    .filter((card) => {
+      if (cards.some((item) => item.id === card.id)) return false;
+      if (colors.has(card.color)) return true;
+      if (ranks.includes(card.rank)) return true;
+      if (ranks.some((rank) => Math.abs(rank - card.rank) <= 2)) return true;
+      return card.rank >= 8;
+    })
+    .sort((a, b) => waitCardRelevance(cards, b) - waitCardRelevance(cards, a))
+    .slice(0, needed === 1 ? 16 : 8);
+}
+
+function waitCardRelevance(cards, card) {
+  const sameColor = cards.some((item) => item.color === card.color) ? 8 : 0;
+  const sameRank = cards.some((item) => item.rank === card.rank) ? 7 : 0;
+  const nearRun = cards.some((item) => Math.abs(item.rank - card.rank) <= 2) ? 5 : 0;
+  return sameColor + sameRank + nearRun + card.rank * 0.2;
+}
+
+function waitBeatsOpponent(state, player, banner, result) {
+  const opponent = 1 - player;
+  const opponentCards = state.players[opponent].rows[banner];
+  if (opponentCards.length === 0) return true;
+  if (opponentCards.length === bannerSize(state, banner)) return compareFormations(result, formation(opponentCards, state, banner)) >= 0;
+  if (opponentCards.length < bannerSize(state, banner) - 1) return result.type >= 2;
+  const opponentBest = bestPossibleFormation(state, opponentCards, banner);
+  return opponentBest ? compareFormations(result, opponentBest) >= 0 : true;
+}
+
+function bestPossibleFormation(state, existing, banner) {
+  const needed = bannerSize(state, banner) - existing.length;
+  if (needed < 0) return null;
+  if (needed === 0) return formation(existing, state, banner);
+  let best = null;
+  for (const combo of combinations(relevantWaitCards(existing, availableTroopsForWait(state), needed), needed)) {
+    const result = formation([...existing, ...combo], state, banner);
+    if (result && (!best || compareFormations(result, best) > 0)) best = result;
+  }
+  return best;
+}
+
+function combinations(items, size, start = 0, prefix = [], output = []) {
+  if (prefix.length === size) {
+    output.push(prefix);
+    return output;
+  }
+  for (let i = start; i <= items.length - (size - prefix.length); i += 1) {
+    combinations(items, size, i + 1, [...prefix, items[i]], output);
+  }
+  return output;
 }
 
 function linePressure(state, player, banner, w) {
